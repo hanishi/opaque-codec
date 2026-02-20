@@ -1,5 +1,5 @@
-import codec.{StringCodec, LongCodec, StringEncoder, StringDecoder, LongEncoder, LongDecoder}
-import codec.SprayJsonSupport.given
+import codec.{OpaqueCodec, StringEncoder, StringDecoder, LongEncoder, LongDecoder}
+import codec.OpaqueJsonSupport.given
 import spray.json.*
 import domain.UserId.UserId
 import domain.OrderId.OrderId
@@ -13,61 +13,54 @@ def main(): Unit =
   println("=== Zero-Cost Type Class Derivation Demo ===")
   println()
 
-  // --- StringCodec[String]: the trivial identity codec ---
-  val stringCodec = summon[StringCodec[String]]
-  println("StringCodec[String]")
+  // --- OpaqueCodec[String, String]: the trivial identity codec ---
+  val stringCodec = summon[OpaqueCodec[String, String]]
+  println("OpaqueCodec[String, String]")
   println(s"  encode(\"hello\") = ${stringCodec.encode("hello")}")
   println(s"  decode(\"hello\") = ${stringCodec.decode("hello")}")
   println()
 
-  // --- StringCodec[UserId]: auto-derived via =:= evidence ---
-  val userIdCodec = summon[StringCodec[UserId]]
+  // --- OpaqueCodec[UserId, String]: auto-derived via =:= evidence ---
+  val userIdCodec = summon[OpaqueCodec[UserId, String]]
   val uid = domain.UserId("user-42")
-  println("StringCodec[UserId]")
+  println("OpaqueCodec[UserId, String]")
   println(s"  encode(UserId(\"user-42\")) = ${userIdCodec.encode(uid)}")
   println(s"  decode(\"user-42\")         = ${userIdCodec.decode("user-42")}")
   println()
 
-  // --- StringCodec[OrderId] ---
-  val orderIdCodec = summon[StringCodec[OrderId]]
+  // --- OpaqueCodec[OrderId, String] ---
+  val orderIdCodec = summon[OpaqueCodec[OrderId, String]]
   val oid = domain.OrderId("order-99")
-  println("StringCodec[OrderId]")
+  println("OpaqueCodec[OrderId, String]")
   println(s"  encode(OrderId(\"order-99\")) = ${orderIdCodec.encode(oid)}")
   println(s"  decode(\"order-99\")          = ${orderIdCodec.decode("order-99")}")
   println()
 
-  // --- StringCodec[Email] ---
-  val emailCodec = summon[StringCodec[Email]]
+  // --- OpaqueCodec[Email, String] ---
+  val emailCodec = summon[OpaqueCodec[Email, String]]
   val email = domain.Email("alice@example.com")
-  println("StringCodec[Email]")
+  println("OpaqueCodec[Email, String]")
   println(s"  encode(Email(\"alice@example.com\")) = ${emailCodec.encode(email)}")
   println(s"  decode(\"alice@example.com\")         = ${emailCodec.decode("alice@example.com")}")
   println()
 
-  // --- StringCodec[SKU] ---
-  val skuCodec = summon[StringCodec[SKU]]
+  // --- OpaqueCodec[SKU, String] ---
+  val skuCodec = summon[OpaqueCodec[SKU, String]]
   val sku = domain.SKU("SKU-1234")
-  println("StringCodec[SKU]")
+  println("OpaqueCodec[SKU, String]")
   println(s"  encode(SKU(\"SKU-1234\")) = ${skuCodec.encode(sku)}")
   println(s"  decode(\"SKU-1234\")      = ${skuCodec.decode("SKU-1234")}")
   println()
 
-  // --- LongCodec[Long]: the trivial identity codec ---
-  val longCodec = summon[LongCodec[Long]]
-  println("LongCodec[Long]")
-  println(s"  encode(42L) = ${longCodec.encode(42L)}")
-  println(s"  decode(42L) = ${longCodec.decode(42L)}")
-  println()
-
-  // --- LongCodec[Timestamp]: auto-derived via =:= evidence ---
-  val tsCodec = summon[LongCodec[Timestamp]]
+  // --- OpaqueCodec[Timestamp, Long]: auto-derived via =:= evidence ---
+  val tsCodec = summon[OpaqueCodec[Timestamp, Long]]
   val ts = domain.Timestamp(1700000000L)
-  println("LongCodec[Timestamp]")
+  println("OpaqueCodec[Timestamp, Long]")
   println(s"  encode(Timestamp(1700000000L)) = ${tsCodec.encode(ts)}")
   println(s"  decode(1700000000L)            = ${tsCodec.decode(1700000000L)}")
   println()
 
-  // --- Spray JSON integration: JsonFormat auto-derived from codecs ---
+  // --- Spray JSON integration: JsonFormat auto-derived from OpaqueCodec ---
   println("=== Spray JSON Integration ===")
   println()
 

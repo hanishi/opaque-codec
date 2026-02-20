@@ -1,7 +1,7 @@
 package codec
 
 import spray.json.*
-import codec.SprayJsonSupport.given
+import codec.OpaqueJsonSupport.given
 import domain.UserId.UserId
 import domain.OrderId.OrderId
 import domain.Email.Email
@@ -12,70 +12,61 @@ import domain.ValidatedEmail.ValidatedEmail
 class SprayJsonSupportSpec extends munit.FunSuite:
 
   test("JsonFormat[UserId] serializes to JSON string and back") {
-    val format = summon[JsonFormat[UserId]]
     val uid = domain.UserId("user-42")
-    val json = format.write(uid)
+    val json = uid.toJson
     assertEquals(json, JsString("user-42"))
-    assertEquals(format.read(json), uid)
+    assertEquals(json.convertTo[UserId], uid)
   }
 
   test("JsonFormat[OrderId] serializes to JSON string and back") {
-    val format = summon[JsonFormat[OrderId]]
     val oid = domain.OrderId("order-99")
-    val json = format.write(oid)
+    val json = oid.toJson
     assertEquals(json, JsString("order-99"))
-    assertEquals(format.read(json), oid)
+    assertEquals(json.convertTo[OrderId], oid)
   }
 
   test("JsonFormat[Email] serializes to JSON string and back") {
-    val format = summon[JsonFormat[Email]]
     val email = domain.Email("alice@example.com")
-    val json = format.write(email)
+    val json = email.toJson
     assertEquals(json, JsString("alice@example.com"))
-    assertEquals(format.read(json), email)
+    assertEquals(json.convertTo[Email], email)
   }
 
   test("JsonFormat[SKU] serializes to JSON string and back") {
-    val format = summon[JsonFormat[SKU]]
     val sku = domain.SKU("SKU-1234")
-    val json = format.write(sku)
+    val json = sku.toJson
     assertEquals(json, JsString("SKU-1234"))
-    assertEquals(format.read(json), sku)
+    assertEquals(json.convertTo[SKU], sku)
   }
 
   test("JsonFormat[Timestamp] serializes to JSON number and back") {
-    val format = summon[JsonFormat[Timestamp]]
     val ts = domain.Timestamp(1700000000L)
-    val json = format.write(ts)
+    val json = ts.toJson
     assertEquals(json, JsNumber(1700000000L))
-    assertEquals(format.read(json), ts)
+    assertEquals(json.convertTo[Timestamp], ts)
   }
 
   test("JsonFormat[UserId] rejects non-string JSON") {
-    val format = summon[JsonFormat[UserId]]
     intercept[DeserializationException] {
-      format.read(JsNumber(42))
+      JsNumber(42).convertTo[UserId]
     }
   }
 
   test("JsonFormat[Timestamp] rejects non-number JSON") {
-    val format = summon[JsonFormat[Timestamp]]
     intercept[DeserializationException] {
-      format.read(JsString("not-a-number"))
+      JsString("not-a-number").convertTo[Timestamp]
     }
   }
 
   test("JsonFormat[ValidatedEmail] serializes via <:< encoder and validated decoder") {
-    val format = summon[JsonFormat[ValidatedEmail]]
     val Right(ve) = domain.ValidatedEmail("alice@example.com"): @unchecked
-    val json = format.write(ve)
+    val json = ve.toJson
     assertEquals(json, JsString("alice@example.com"))
-    assertEquals(format.read(json), ve)
+    assertEquals(json.convertTo[ValidatedEmail], ve)
   }
 
   test("JsonFormat[ValidatedEmail] rejects invalid email on deserialization") {
-    val format = summon[JsonFormat[ValidatedEmail]]
     intercept[DeserializationException] {
-      format.read(JsString("not-an-email"))
+      JsString("not-an-email").convertTo[ValidatedEmail]
     }
   }
