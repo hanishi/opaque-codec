@@ -34,30 +34,30 @@ object CampaignId {
 object CampaignId {
   opaque type CampaignId = String
   def apply(value: String): CampaignId = value
-  given CampaignId =:= String = summon                       // ①②③ を置き換え
+  given OpaqueCodec[CampaignId, String] = OpaqueCodec.fromEvidence  // ①②③ を置き換え
 }
 ```
 
 各ボイラープレートの対応関係は以下の通りです：
 
-| Before（型ごとに手書き） | After（`=:=` から導出） |
+| Before（型ごとに手書き） | After（`OpaqueCodec` から導出） |
 |---|---|
-| ① `extension (id: CampaignId) { def value: String = id }` | 不要 — ②③ は `.value` でアンラップするために存在していたが、汎用導出ルールが内部で `ev(_)` を使うため不要に |
+| ① `extension (id: CampaignId) { def value: String = id }` | 不要 — ②③ は `.value` でアンラップするために存在していたが、汎用導出ルールが内部で `codec.encode` を使うため不要に |
 | ② `given Ordering[CampaignId] = Ordering.String.on(_.value)` | `OpaqueOrdering` により自動導出 |
 | ③ `given JsonFormat[CampaignId] with { ... }`（8行） | `OpaqueJsonSupport` により自動導出 |
 | **合計：型ごとに11行のボイラープレート** | **合計：型ごとに1行のエビデンス** |
 
-`.value` は ② と ③ が依存していた手動アンラップでした。`=:=` を使えば、汎用導出ルールが内部で `ev(_)` を呼び出して同じアンラップを行うため、型ごとのエクステンションは完全に不要になります。
+`.value` は ② と ③ が依存していた手動アンラップでした。`OpaqueCodec` を使えば、汎用導出ルールが内部で `codec.encode` を呼び出して同じアンラップを行うため、型ごとのエクステンションは完全に不要になります。
 
-この1行が `JsonFormat`、`Ordering`、そして将来の型クラスインスタンスすべてを置き換えます。これらはすべて、エクスポートされた `=:=` エビデンスからコンパイラによって自動的に導出されます。ドメイン固有のエクステンションは本来あるべき場所 — コンパニオンに手書き — のままです。
+この1行が `JsonFormat`、`Ordering`、そして将来の型クラスインスタンスすべてを置き換えます。これらはすべて、エクスポートされた `OpaqueCodec` インスタンスからコンパイラによって自動的に導出されます。ドメイン固有のエクステンションは本来あるべき場所 — コンパニオンに手書き — のままです。
 
 **このガイドで学べること：**
 
 1. opaque type の仕組みと「内側 vs. 外側」の可視性ルール
 2. 問題：コンパイラが基底型のコーデックを自動的に再利用できない理由
-3. 解決策：型等価エビデンス（`=:=`）と `inline given` を使ったジェネリックなインスタンス導出
+3. 解決策：型等価エビデンス（`=:=`）と `OpaqueCodec.fromEvidence` を使ったジェネリックなインスタンス導出
 4. 実際のシリアライゼーションライブラリへの適用方法（Spray JSON を例として）
-5. `Ordering` やその他の標準型クラスを同じ方法で導出する方法
+5. 単一の汎用ルールで `Ordering` やその他の標準型クラスを導出する方法
 6. `<:<`（サブタイプエビデンス）を使ったバリデーション付き型の安全な扱い方
 
 ## 背景：Scala 3 の Opaque Type
@@ -236,6 +236,11 @@ object OpaqueCodec {
       def decode(u: U): T = from(u)
     }
 
+  // =:= エビデンスを消費し、具体的な OpaqueCodec を生成。
+  // =:= が利用可能なコンパニオンオブジェクト内部から呼び出される。
+  inline def fromEvidence[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
+    fromConversion(ev(_), ev.flip(_))
+
   // コンパイラが T と U が等しいことを証明できる任意の型に対して、
   // OpaqueCodec[T, U] を自動的に生成
   inline given derived[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
@@ -243,7 +248,12 @@ object OpaqueCodec {
 }
 ```
 
-`derived` メソッドを分解しましょう：
+主要なメソッドを見ていきましょう：
+
+- **`fromEvidence`** — コンパニオンオブジェクトが呼び出す non-given の `inline def` で、コンパニオン内部で利用可能な `=:=` エビデンスから具体的な `OpaqueCodec` を生成します。これがドメイン型がコーデックをエクスポートする主要な方法です。
+- **`derived`** — `=:=` エビデンスが暗黙スコープにすでにある場合（例：`<:<.refl` による `OpaqueCodec[String, String]`）にコンパイラが使用できる `given` です。
+
+`derived` メソッドの詳細を分解しましょう：
 
 - **`inline given derived[T, U]`** — これはジェネリック given（「ブランケット given」とも呼ばれます）です：*任意の*型ペア `T` と `U` に対して `OpaqueCodec` を生成できます。`inline` キーワードはコンパイラにすべてをコンパイル時に解決して本体をインライン展開するよう指示するため、ランタイムには何も残りません。
 - **`(using inline ev: T =:= U)`** — これが対象となる型ペアを制約します。コンパイラは `T =:= U` を証明できる場合にのみこのルールを使用します。基底型として定義された opaque type を含む、本当に等しい型のみがマッチします。
@@ -251,9 +261,9 @@ object OpaqueCodec {
 
 すべてが `inline` なので、`=:=` 変換（恒等キャストである）はコンパイル時に完全に消去されます。生成されるコードには変換のオーバーヘッドも、アロケーションも、エビデンスオブジェクトもなく、基底型に対する直接操作だけが残ります。
 
-### ステップ2：エビデンスのエクスポート
+### ステップ2：具体的な `OpaqueCodec` のエクスポート
 
-上記の導出ルールは `T =:= U` が暗黙スコープにあることを要求します。しかし先ほど見たように、コンパイラが `UserId =:= String` を証明できるのはコンパニオンの*内側*だけです。その知識を外側でも利用可能にするために「エクスポート」する必要があります：
+コンパイラが `UserId =:= String` を証明できるのはコンパニオンの*内側*だけです。生の `=:=` エビデンスをリークさせる（後述の Ordering セクションで問題を引き起こす）代わりに、コンパニオン内部で消費し、具体的な `OpaqueCodec` インスタンスをエクスポートします：
 
 ```scala
 object UserId {
@@ -261,22 +271,21 @@ object UserId {
 
   def apply(value: String): UserId = value
 
-  // 型等価エビデンスをエクスポートして、このオブジェクトの外側でも利用可能にする。
-  // ここの内側では、コンパイラは UserId = String を知っているので summon は成功する。
-  // この given はその知識を外部コードが使えるよう再公開する。
-  given UserId =:= String = summon
+  // =:= エビデンス（コンパニオン内部で利用可能）を消費し、
+  // 具体的な OpaqueCodec[UserId, String] インスタンスをエクスポートする。
+  given OpaqueCodec[UserId, String] = OpaqueCodec.fromEvidence
 }
 ```
 
-この行は循環しているように見えます — `given` を `summon` で定義しており、`summon` は `given` を探します。しかし循環ではありません：
+何が起こっているか：
 
-1. このコンパニオンの内側では、コンパイラは `UserId = String` であることをすでに知っています（ここでは型エイリアスです）
-2. なので `summon[UserId =:= String]` はコンパイラの組み込みエビデンスを使って成功します
-3. `given` 宣言はそのエビデンスを再エクスポートし、型が不透明なコンパニオンの外側でも利用可能にします
+1. このコンパニオン内部では、コンパイラは `UserId = String` を知っているので、`fromEvidence` は `UserId =:= String` を summon できる
+2. `fromEvidence` はそのエビデンスを使って具体的な `OpaqueCodec[UserId, String]` を構築する
+3. `given` 宣言はその具体的なインスタンス — 生の `=:=` ではなく — をエクスポートし、コンパニオンの外側で利用可能にする
 
-この行がなければ、コンパニオンの外側のコードは `UserId =:= String` を証明する手段がなく、ジェネリック導出は発火しません。
+`=:=` は決してリークされません。外部コードが見るのは `OpaqueCodec[UserId, String]` だけです — コンパイラが曖昧さなく解決できる2型パラメータのインスタンスです（なぜこれが重要かは Ordering セクションを参照）。
 
-これはコーデックインスタンスを手書きするのに比べて依然として大きな改善です。opaque type ごとに**1行のエビデンスエクスポート**を書くだけで、`=:=` パターンを使う*すべての*型クラス — `OpaqueCodec`、JSON フォーマット、データベースカラムマッパー、その他何でも — の導出が得られます。
+これはコーデックインスタンスを手書きするのに比べて大きな改善です。opaque type ごとに**1行**書くだけで、`OpaqueCodec` を取る*すべての*型クラス — JSON フォーマット、`Ordering`、データベースカラムマッパー、その他何でも — の導出が得られます。
 
 ## コンパイラが行うこと：ステップ・バイ・ステップ
 
@@ -289,10 +298,10 @@ summon[OpaqueCodec[UserId, String]]
 …裏側で起こっていることは：
 
 1. **検索** — コンパイラは暗黙スコープで `OpaqueCodec[UserId, String]` を探す
-2. **マッチ** — `OpaqueCodec.derived[T, U]` を見つけ、`T = UserId`、`U = String` で試す
-3. **証明** — `derived` は `UserId =:= String` を要求するので、コンパイラはそのエビデンスを探す。`UserId` のコンパニオンオブジェクトからエクスポートされた `given UserId =:= String` を見つける
-4. **構築** — エビデンスを手にして、コンパイラは `fromConversion(ev(_), ev.flip(_))` を呼びコーデックを構築する
-5. **インライン展開** — `derived` と `ev` の両方が `inline` なので、コンパイラはすべてをコンパイル時に展開する。`=:=` 変換（恒等関数である）は完全に消去され、ランタイムオーバーヘッドはゼロ
+2. **発見** — `UserId` のコンパニオンオブジェクトからエクスポートされた具体的な `given OpaqueCodec[UserId, String]`（`fromEvidence` で生成）を見つける
+3. **完了** — これ以上の解決は不要。インスタンスは具体的であり、呼び出し側で `=:=` を通じた導出は行われない
+
+`fromEvidence` が `inline` であるため、`=:=` 変換（恒等関数である）はコンパイル時に消去されます。生成されるコードのランタイムオーバーヘッドはゼロです。
 
 結果：コンパイル時に型安全で、ランタイムで無料の `OpaqueCodec[UserId, String]` が得られます。
 
@@ -309,35 +318,35 @@ summon[OpaqueCodec[BidPrice, BigDecimal]] // BigDecimal ベース、同じパタ
 
 ## スケールアップ：複数の Opaque Type
 
-パターンはきれいにスケールします。新しい opaque type ごとにエビデンスのエクスポートだけが必要です：
+パターンはきれいにスケールします。新しい opaque type ごとに `OpaqueCodec` のエクスポートだけが必要です：
 
 ```scala
 object OrderId {
   opaque type OrderId = String
   def apply(value: String): OrderId = value
-  given OrderId =:= String = summon
+  given OpaqueCodec[OrderId, String] = OpaqueCodec.fromEvidence
 }
 
 object Email {
   opaque type Email = String
   def apply(value: String): Email = value
-  given Email =:= String = summon
+  given OpaqueCodec[Email, String] = OpaqueCodec.fromEvidence
 }
 
 object Timestamp {
   opaque type Timestamp = Long
   def apply(value: Long): Timestamp = value
-  given Timestamp =:= Long = summon
+  given OpaqueCodec[Timestamp, Long] = OpaqueCodec.fromEvidence
 }
 
 object BidPrice {
   opaque type BidPrice = BigDecimal
   def apply(value: BigDecimal): BidPrice = value
-  given BidPrice =:= BigDecimal = summon
+  given OpaqueCodec[BidPrice, BigDecimal] = OpaqueCodec.fromEvidence
 }
 ```
 
-これらの型すべて — `String` ベース、`Long` ベース、`BigDecimal` ベース — は、単一の `OpaqueCodec.derived` ルールから、型ごとのコーデックボイラープレートなしに `OpaqueCodec` インスタンスを得ます。
+これらの型すべて — `String` ベース、`Long` ベース、`BigDecimal` ベース — は、この1行だけで `OpaqueCodec` インスタンス、`Ordering`、JSON フォーマット、そして将来の型クラスを、型ごとのボイラープレートなしに得ます。
 
 ## 実用例：Spray JSON 統合
 
@@ -381,9 +390,9 @@ object OpaqueJsonSupport extends LowPriorityOpaqueJsonSupport {
 
 `=:=` パターンはシリアライゼーションに限定されません。基底型に存在する任意の型クラスを、同じ方法で opaque type に対して導出できます。`Ordering` は自然な例です — 多数の opaque 識別子型を持つコードベースでは、`given Ordering[CampaignId] = Ordering.String.on(_.value)` をそれぞれに手書きすることになります。
 
-### ナイーブなアプローチとそれが機能しない理由
+### 生の `=:=` を使ったナイーブなアプローチとそれが機能しない理由
 
-単一のジェネリックルールですべてのケースをカバーできると期待するかもしれません：
+コンパニオンが生の `=:=` エビデンス（つまり `given UserId =:= String = summon`）をエクスポートしていた場合、単一のジェネリックルールですべてのケースをカバーできると期待するかもしれません：
 
 ```scala
 // ✗ コンパイルされない — 曖昧な =:= エビデンス
@@ -397,11 +406,12 @@ object OpaqueOrdering {
 
 これは `OpaqueCodec.derived` では問題になりませんでした。なぜなら呼び出し側が常に両方の型パラメータを指定するからです — `summon[OpaqueCodec[UserId, String]]` — 推論するものがありません。しかし `List[UserId].sorted` はコンパイラに `Ordering[UserId]` が必要だとだけ伝えます。基底型を発見しなければならず、そこで曖昧さが生じます。
 
-### 修正：基底型を固定する
+### ~~修正：基底型を固定する~~
 
-解決策は、基底型ごとに導出ルールを提供することです。`U` が `String` に固定されると、コンパイラが見つける `=:= String` エビデンスはコンパニオンからエクスポートされたものだけです — `<:<.refl[UserId]` は `UserId =:= UserId` を与え、`T =:= String` にはマッチしません：
+~~解決策は、基底型ごとに導出ルールを提供することです。`U` が `String` に固定されると、コンパイラが見つける `=:= String` エビデンスはコンパニオンからエクスポートされたものだけです — `<:<.refl[UserId]` は `UserId =:= UserId` を与え、`T =:= String` にはマッチしません：~~
 
 ```scala
+// ✗ 以前は必要だった — 基底型ごとに1ルール
 object OpaqueOrdering {
 
   private def fromEvidence[T, U](to: T => U, ord: Ordering[U]): Ordering[T] =
@@ -421,7 +431,22 @@ object OpaqueOrdering {
 }
 ```
 
-単一のルールほどエレガントではありませんが、それでも手書きの `Ordering` インスタンスすべてを1つの import で置き換えられます：
+~~単一のルールほどエレガントではありませんが、それでも手書きの `Ordering` インスタンスすべてを1つの import で置き換えられます。~~
+
+### 真の修正：生の `=:=` の代わりに具体的な `OpaqueCodec` をエクスポートする
+
+上記のピニングアプローチはもう不要です。各コンパニオンが生の `=:=` エビデンスの代わりに具体的な `OpaqueCodec[T, U]` をエクスポートすることで、曖昧さは完全に消えます。`OpaqueOrdering` は単一の汎用ルールになります：
+
+```scala
+object OpaqueOrdering {
+  given derived[T, U](using codec: OpaqueCodec[T, U], ord: Ordering[U]): Ordering[T] =
+    ord.on(codec.encode)
+}
+```
+
+これが機能する理由は、`OpaqueCodec[UserId, U]` はコンパニオンからエクスポートされた具体的な `OpaqueCodec[UserId, String]` にしか解決できないためです — コンパイラは直接 `U = String` を推論します。`OpaqueCodec` は `=:=`/`<:<` 階層とは無関係なトレイトなので、`<:<.refl` は関係しません。
+
+同じ単一の import がそのまま機能します：
 
 ```scala
 import codec.OpaqueOrdering.given
@@ -430,9 +455,7 @@ val ids = List(UserId("charlie"), UserId("alice"), UserId("bob"))
 ids.sorted  // List(alice, bob, charlie) — Ordering[UserId] が自動導出される
 ```
 
-### なぜ OpaqueCodec にはこの問題がないのか
-
-`OpaqueCodec[T, U]` は同じ2型パラメータの `=:=` 導出を使いますが、呼び出し側が常に `T` と `U` の両方を明示的に指定するため機能します — 例えば `summon[OpaqueCodec[UserId, String]]`。`U` がすでに `String` に固定されているので曖昧さはありません。`Ordering[T]` はそのシグネチャに基底型を持たないため、コンパイラはそれを推論しなければならず、そこで `<:<.refl` が衝突を生みます。
+新しい基底型（例：`opaque type TraceId = UUID`）を追加しても `OpaqueOrdering` の変更は不要です — 単一のルールが自動的にカバーします。
 
 ## 制約
 
@@ -691,7 +714,7 @@ CodecBenchmark.opaque_roundtripOrderId  0.455 ± 0.004  ops/ns
 
 ## 結論
 
-Scala 3 の `opaque type`、型等価エビデンス（`=:=`）、`inline given` を組み合わせることで、型安全でゼロコスト、かつほぼボイラープレートフリーの型クラス導出が得られます。汎用化された `OpaqueCodec[T, U]` は `String`、`Long`、`BigDecimal` など、あらゆる基底型を単一の導出ルールで扱えます。
+Scala 3 の `opaque type`、型等価エビデンス（`=:=`）、`OpaqueCodec.fromEvidence` を組み合わせることで、型安全でゼロコスト、かつほぼボイラープレートフリーの型クラス導出が得られます。汎用化された `OpaqueCodec[T, U]` はあらゆる基底型 — `String`、`Long`、`BigDecimal` など — を扱えます。各コンパニオンが（生の `=:=` ではなく）具体的な `OpaqueCodec` インスタンスをエクスポートするため、`OpaqueOrdering` などのライブラリ統合は単一の汎用 `[T, U]` ルールで済みます — 基底型ごとのピニングは不要です。
 
 バリデーション付き型に対しては、上限境界が提供するサブタイプエビデンス（`<:<`）が、バリデーションを迂回するバックドアを開くことなく自動エンコーディングを提供します。デコーディングは制約を強制する手書きインスタンスを経由します。
 
