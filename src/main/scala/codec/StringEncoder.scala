@@ -1,15 +1,18 @@
 package codec
 
-trait StringEncoder[T]:
+trait StringEncoder[T] {
   def encode(t: T): String
+}
 
-object StringEncoder:
+object StringEncoder {
 
-  given StringEncoder[String] with
+  given StringEncoder[String] with {
     def encode(t: String): String = t
+  }
 
   private def fromConversion[T](to: T => String): StringEncoder[T] =
     (t: T) => to(t)
 
   inline given derived[T](using inline ev: T <:< String): StringEncoder[T] =
     fromConversion(ev(_))
+}

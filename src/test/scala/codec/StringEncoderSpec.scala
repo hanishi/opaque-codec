@@ -4,7 +4,7 @@ import domain.UserId.UserId
 import domain.Email.Email
 import domain.ValidatedEmail.ValidatedEmail
 
-class StringEncoderSpec extends munit.FunSuite:
+class StringEncoderSpec extends munit.FunSuite {
 
   test("StringEncoder[String] resolves and encodes") {
     val encoder = summon[StringEncoder[String]]
@@ -28,3 +28,4 @@ class StringEncoderSpec extends munit.FunSuite:
     val Right(ve) = domain.ValidatedEmail("alice@example.com"): @unchecked
     assertEquals(encoder.encode(ve), "alice@example.com")
   }
+}

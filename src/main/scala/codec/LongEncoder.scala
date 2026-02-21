@@ -1,15 +1,18 @@
 package codec
 
-trait LongEncoder[T]:
+trait LongEncoder[T] {
   def encode(t: T): Long
+}
 
-object LongEncoder:
+object LongEncoder {
 
-  given LongEncoder[Long] with
+  given LongEncoder[Long] with {
     def encode(t: Long): Long = t
+  }
 
   private def fromConversion[T](to: T => Long): LongEncoder[T] =
     (t: T) => to(t)
 
   inline given derived[T](using inline ev: T <:< Long): LongEncoder[T] =
     fromConversion(ev(_))
+}

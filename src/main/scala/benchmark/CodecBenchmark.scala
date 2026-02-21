@@ -24,7 +24,7 @@ import domain.OrderId.OrderId
 @Measurement(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
 @Fork(1)
 @State(Scope.Benchmark)
-class CodecBenchmark:
+class CodecBenchmark {
 
   private val rawString: String = "user-42"
   private val userId: UserId = domain.UserId("user-42")
@@ -63,3 +63,4 @@ class CodecBenchmark:
   @Benchmark
   def opaque_roundtripOrderId(): OrderId =
     orderIdCodec.decode(orderIdCodec.encode(orderId))
+}

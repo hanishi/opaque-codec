@@ -1,5 +1,7 @@
 # Zero-Cost Type Class Derivation for Scala 3 Opaque Types
 
+[日本語版](README.ja.md)
+
 ## What This Is
 
 This project shows a pattern for **automatically deriving type class instances for opaque types** in Scala 3 — without writing a separate instance for each type, and with zero runtime overhead.
@@ -20,10 +22,11 @@ Multiply that across 15+ types, and each new type class you add (database column
 With the pattern described here, each companion shrinks to a single line of evidence export:
 
 ```scala
-object CampaignId:
+object CampaignId {
   opaque type CampaignId = String
   def apply(value: String): CampaignId = value
   given CampaignId =:= String = summon
+}
 ```
 
 That one line replaces the `JsonFormat`, the `Ordering`, and any future type class instance — all derived automatically by the compiler from the exported `=:=` evidence. The domain-specific extensions stay where they belong: hand-written in the companion.
@@ -48,16 +51,16 @@ Scala 2's `AnyVal` was designed to help. When you defined a class extending `Any
 ```mermaid
 graph LR
     subgraph "AnyVal (Scala 2)"
-        A1["case class UserId(v: String)\nextends AnyVal"] --> B1{"Compiler sees\nconcrete type?"}
-        B1 -->|Yes| C1["✅ Unboxed\nraw String on stack"]
-        B1 -->|No| D1["❌ Boxed\nUserId object on heap"]
+        A1["case class UserId(v: String)<br/>extends AnyVal"] --> B1{"Compiler sees<br/>concrete type?"}
+        B1 -->|Yes| C1["✅ Unboxed<br/>raw String on stack"]
+        B1 -->|No| D1["❌ Boxed<br/>UserId object on heap"]
     end
 ```
 
 ```mermaid
 graph LR
     subgraph "Opaque Type (Scala 3)"
-        A2["opaque type UserId = String"] --> C2["✅ Always unboxed\nraw String at runtime"]
+        A2["opaque type UserId = String"] --> C2["✅ Always unboxed<br/>raw String at runtime"]
     end
 ```
 
@@ -68,10 +71,11 @@ Scala 3 introduced opaque types to provide a genuine zero-overhead guarantee. An
 Scala 3's `opaque type` lets you create a brand-new type with zero runtime overhead:
 
 ```scala
-object UserId:
+object UserId {
   opaque type UserId = String
 
   def apply(value: String): UserId = value
+}
 ```
 
 This gives you two things at once:
@@ -115,9 +119,10 @@ Outside the companion, `UserId` and `String` are different types. The compiler w
 Let's define a simple type class that represents bidirectional conversion between an opaque type and its underlying type:
 
 ```scala
-trait OpaqueCodec[T, U]:
+trait OpaqueCodec[T, U] {
   def encode(t: T): U
   def decode(u: U): T
+}
 ```
 
 This `T ⇄ U` pattern shows up everywhere — JSON serialization, URL parameter encoding, database column mapping, and so on.
@@ -129,9 +134,10 @@ You *can* write the instance by hand inside the companion object, where the comp
 ```scala
 // Inside the companion, UserId = String is visible,
 // so we can assign between them freely
-given OpaqueCodec[UserId, String] with
+given OpaqueCodec[UserId, String] with {
   def encode(t: UserId): String = t   // UserId → String works here
   def decode(s: String): UserId = s   // String → UserId works here
+}
 ```
 
 But repeating this for `OrderId`, `Email`, `SKU`, and every other opaque type means writing the same code over and over. The implementations are identical — only the type name changes.
@@ -173,11 +179,12 @@ This is where the inside/outside rule comes back:
 - **Outside the companion object**: the compiler sees `UserId` as opaque — it doesn't know the underlying type. `summon[UserId =:= String]` fails to compile.
 
 ```scala
-object UserId:
+object UserId {
   opaque type UserId = String
 
   // Inside: the compiler knows UserId = String
   val evidence = summon[UserId =:= String]  // ✓ compiles
+}
 
 // Outside: the compiler doesn't know what UserId is
 val evidence = summon[UserId =:= String]    // ✗ compile error
@@ -192,25 +199,28 @@ So we need two things: a generic derivation rule that works in terms of `=:=`, a
 We define a derivation rule in `OpaqueCodec`'s companion object that works for *any* type the compiler can prove is equal to another:
 
 ```scala
-trait OpaqueCodec[T, U]:
+trait OpaqueCodec[T, U] {
   def encode(t: T): U
   def decode(u: U): T
+}
 
-object OpaqueCodec:
+object OpaqueCodec {
 
   // Factory method: given conversion functions, build an OpaqueCodec
   private def fromConversion[T, U](
     to: T => U,
     from: U => T
   ): OpaqueCodec[T, U] =
-    new OpaqueCodec[T, U]:
+    new OpaqueCodec[T, U] {
       def encode(t: T): U = to(t)
       def decode(u: U): T = from(u)
+    }
 
   // For any type T that the compiler can prove equals U,
   // automatically create an OpaqueCodec[T, U]
   inline given derived[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
     fromConversion(ev(_), ev.flip(_))
+}
 ```
 
 Let's break down the `derived` method:
@@ -226,7 +236,7 @@ Because everything is `inline`, the `=:=` conversions (which are identity casts)
 The derivation rule above requires `T =:= U` to be in implicit scope. But as we saw, the compiler can only prove `UserId =:= String` *inside* the companion. We need to "export" that knowledge so it's available outside:
 
 ```scala
-object UserId:
+object UserId {
   opaque type UserId = String
 
   def apply(value: String): UserId = value
@@ -235,6 +245,7 @@ object UserId:
   // Inside here, the compiler knows UserId = String, so summon succeeds.
   // This given re-publishes that knowledge for external code to use.
   given UserId =:= String = summon
+}
 ```
 
 This line may look circular — we're defining a `given` using `summon`, which looks up a `given`. But it's not:
@@ -281,25 +292,29 @@ summon[OpaqueCodec[BidPrice, BigDecimal]] // BigDecimal-based, same pattern
 The pattern scales cleanly. Each new opaque type needs only the evidence export:
 
 ```scala
-object OrderId:
+object OrderId {
   opaque type OrderId = String
   def apply(value: String): OrderId = value
   given OrderId =:= String = summon
+}
 
-object Email:
+object Email {
   opaque type Email = String
   def apply(value: String): Email = value
   given Email =:= String = summon
+}
 
-object Timestamp:
+object Timestamp {
   opaque type Timestamp = Long
   def apply(value: Long): Timestamp = value
   given Timestamp =:= Long = summon
+}
 
-object BidPrice:
+object BidPrice {
   opaque type BidPrice = BigDecimal
   def apply(value: BigDecimal): BidPrice = value
   given BidPrice =:= BigDecimal = summon
+}
 ```
 
 All of these types — `String`-based, `Long`-based, `BigDecimal`-based — get `OpaqueCodec` instances with no per-type codec boilerplate, all from the single `OpaqueCodec.derived` rule.
@@ -309,28 +324,35 @@ All of these types — `String`-based, `Long`-based, `BigDecimal`-based — get 
 Here's how `OpaqueCodec` composes with a real serialization library. The following derives a Spray JSON `JsonFormat` from any available `OpaqueCodec`:
 
 ```scala
-object OpaqueJsonSupport extends LowPriorityOpaqueJsonSupport:
+object OpaqueJsonSupport extends LowPriorityOpaqueJsonSupport {
 
   // Any type with an OpaqueCodec[T, String] gets a JsonFormat automatically
-  given opaqueStringJsonFormat[T](using codec: OpaqueCodec[T, String]): JsonFormat[T] with
+  given opaqueStringJsonFormat[T](using codec: OpaqueCodec[T, String]): JsonFormat[T] with {
     def write(t: T) = JsString(codec.encode(t))
-    def read(json: JsValue): T = json match
+    def read(json: JsValue): T = json match {
       case JsString(s) => codec.decode(s)
       case other => deserializationError(s"Expected JSON string, got $other")
+    }
+  }
 
   // Same for Long-backed types
-  given opaqueLongJsonFormat[T](using codec: OpaqueCodec[T, Long]): JsonFormat[T] with
+  given opaqueLongJsonFormat[T](using codec: OpaqueCodec[T, Long]): JsonFormat[T] with {
     def write(t: T) = JsNumber(codec.encode(t))
-    def read(json: JsValue): T = json match
+    def read(json: JsValue): T = json match {
       case JsNumber(n) => codec.decode(n.toLongExact)
       case other => deserializationError(s"Expected JSON number, got $other")
+    }
+  }
 
   // Same for BigDecimal-backed types
-  given opaqueBigDecimalJsonFormat[T](using codec: OpaqueCodec[T, BigDecimal]): JsonFormat[T] with
+  given opaqueBigDecimalJsonFormat[T](using codec: OpaqueCodec[T, BigDecimal]): JsonFormat[T] with {
     def write(t: T) = JsNumber(codec.encode(t))
-    def read(json: JsValue): T = json match
+    def read(json: JsValue): T = json match {
       case JsNumber(n) => codec.decode(n)
       case other => deserializationError(s"Expected JSON number, got $other")
+    }
+  }
+}
 ```
 
 Because `OpaqueCodec[UserId, String]` is derived automatically, `opaqueStringJsonFormat[UserId]` resolves with no additional wiring. The same applies to `Timestamp` (via `Long`), `BidPrice` (via `BigDecimal`), and every other opaque type that exports its evidence.
@@ -345,9 +367,10 @@ You might expect a single generic rule to cover all cases:
 
 ```scala
 // ✗ Does not compile — ambiguous =:= evidence
-object OpaqueOrdering:
+object OpaqueOrdering {
   inline given derived[T, U](using inline ev: T =:= U, ord: Ordering[U]): Ordering[T] =
     ord.on(ev(_))
+}
 ```
 
 This fails because Scala 3's `<:<.refl` provides `T =:= T` for any type. When the compiler searches for `UserId =:= U` with `U` unconstrained, it finds two candidates: `<:<.refl` (giving `U = UserId`) and the exported evidence (giving `U = String`). Neither is more specific, so the compiler reports an ambiguity.
@@ -359,7 +382,7 @@ This wasn't a problem for `OpaqueCodec.derived` because the call sites always sp
 The solution is to provide a derivation rule per underlying type. When `U` is fixed to `String`, the only `=:= String` evidence the compiler finds is the one exported from the companion — `<:<.refl[UserId]` gives `UserId =:= UserId`, which doesn't match `T =:= String`:
 
 ```scala
-object OpaqueOrdering:
+object OpaqueOrdering {
 
   private def fromEvidence[T, U](to: T => U, ord: Ordering[U]): Ordering[T] =
     ord.on(to)
@@ -375,6 +398,7 @@ object OpaqueOrdering:
 
   inline given derivedBigDecimal[T](using inline ev: T =:= BigDecimal, ord: Ordering[BigDecimal]): Ordering[T] =
     fromEvidence(ev(_), ord)
+}
 ```
 
 This is less elegant than a single rule, but it's still a single import that replaces every hand-written `Ordering` instance:
@@ -409,7 +433,7 @@ Each opaque type's companion must export its `=:=` evidence with an explicit `gi
 However, if your opaque type has **validation logic**, exporting `=:=` evidence creates a way to bypass it. Consider:
 
 ```scala
-object Email:
+object Email {
   opaque type Email = String
 
   def apply(value: String): Either[String, Email] =
@@ -417,6 +441,7 @@ object Email:
     else Left(s"Invalid email: $value")
 
   given Email =:= String = summon  // ← this opens a backdoor
+}
 ```
 ld
 The `apply` method enforces that every `Email` contains `@`. But the exported evidence provides a way around that:
@@ -446,11 +471,12 @@ As shown above, exporting `=:=` evidence gives you bidirectional conversion — 
 More importantly, if you declare an opaque type with an **upper bound**, the `<:<` evidence is available outside the companion **automatically** — no export needed:
 
 ```scala
-object ValidatedEmail:
+object ValidatedEmail {
   opaque type ValidatedEmail <: String = String
   //                        ^^^^^^^^^^
   //  This upper bound makes ValidatedEmail <:< String
   //  available to external code automatically.
+}
 ```
 
 ### Splitting encode and decode
@@ -459,26 +485,30 @@ This one-way nature of `<:<` maps perfectly onto a split between encoding (alway
 
 ```scala
 // Encode: T → String (automatic via <:<, no evidence export needed)
-trait StringEncoder[T]:
+trait StringEncoder[T] {
   def encode(t: T): String
+}
 
-object StringEncoder:
+object StringEncoder {
   private def fromConversion[T](to: T => String): StringEncoder[T] =
     (t: T) => to(t)
 
   inline given derived[T](using inline ev: T <:< String): StringEncoder[T] =
     fromConversion(ev(_))
+}
 
 // Decode: String → T (must go through the smart constructor)
-trait StringDecoder[T]:
+trait StringDecoder[T] {
   def decode(s: String): Either[String, T]
+}
 
-object StringDecoder:
+object StringDecoder {
   private def fromConversion[T](from: String => T): StringDecoder[T] =
     (s: String) => Right(from(s))
 
   inline given derived[T](using inline ev: T =:= String): StringDecoder[T] =
     fromConversion(ev.flip(_))
+}
 ```
 
 The `StringEncoder` derives automatically for any type with `<:< String` — including both `=:=` types (since `=:=` extends `<:<`) and upper-bounded types. The `StringDecoder` returns `Either`, giving the implementation a chance to reject invalid input.
@@ -486,7 +516,7 @@ The `StringEncoder` derives automatically for any type with `<:< String` — inc
 ### Using it with a validated opaque type
 
 ```scala
-object ValidatedEmail:
+object ValidatedEmail {
   opaque type ValidatedEmail <: String = String
 
   def apply(value: String): Either[String, ValidatedEmail] =
@@ -496,8 +526,10 @@ object ValidatedEmail:
   // No =:= export — no backdoor.
   // Encoding works automatically via <:< from the upper bound.
   // Decoding goes through the smart constructor to enforce validation.
-  given StringDecoder[ValidatedEmail] with
+  given StringDecoder[ValidatedEmail] with {
     def decode(s: String): Either[String, ValidatedEmail] = apply(s)
+  }
+}
 ```
 
 From external code:
@@ -521,27 +553,34 @@ summon[ValidatedEmail =:= String]    // ✗ compile error
 The `StringEncoder` + `StringDecoder` pair composes into a `JsonFormat` the same way `OpaqueCodec` does. To avoid ambiguity for types that have both `OpaqueCodec` (via `=:=`) and `StringEncoder` + `StringDecoder` (via `<:<`), we use Scala's given priority mechanism — the `OpaqueCodec`-based format takes precedence, and the encoder/decoder pair acts as a fallback for validated types:
 
 ```scala
-object OpaqueJsonSupport extends LowPriorityOpaqueJsonSupport:
+object OpaqueJsonSupport extends LowPriorityOpaqueJsonSupport {
   // Higher priority: bidirectional codec (=:= types)
-  given opaqueStringJsonFormat[T](using codec: OpaqueCodec[T, String]): JsonFormat[T] with
+  given opaqueStringJsonFormat[T](using codec: OpaqueCodec[T, String]): JsonFormat[T] with {
     def write(t: T) = JsString(codec.encode(t))
-    def read(json: JsValue): T = json match
+    def read(json: JsValue): T = json match {
       case JsString(s) => codec.decode(s)
       case other => deserializationError(s"Expected JSON string, got $other")
+    }
+  }
+}
 
-trait LowPriorityOpaqueJsonSupport:
+trait LowPriorityOpaqueJsonSupport {
   // Lower priority: encoder + decoder pair (<:< types with validation)
   given validatedStringJsonFormat[T](using
     encoder: StringEncoder[T],
     decoder: StringDecoder[T]
-  ): JsonFormat[T] with
+  ): JsonFormat[T] with {
     def write(t: T) = JsString(encoder.encode(t))
-    def read(json: JsValue): T = json match
+    def read(json: JsValue): T = json match {
       case JsString(s) =>
-        decoder.decode(s) match
+        decoder.decode(s) match {
           case Right(t) => t
           case Left(err) => deserializationError(err)
+        }
       case other => deserializationError(s"Expected JSON string, got $other")
+    }
+  }
+}
 ```
 
 This means `ValidatedEmail` gets a `JsonFormat` that serializes freely but **rejects invalid values on deserialization** — exactly what you want.

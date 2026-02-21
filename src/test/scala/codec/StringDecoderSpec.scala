@@ -3,7 +3,7 @@ package codec
 import domain.UserId.UserId
 import domain.ValidatedEmail.ValidatedEmail
 
-class StringDecoderSpec extends munit.FunSuite:
+class StringDecoderSpec extends munit.FunSuite {
 
   test("StringDecoder[String] resolves and decodes") {
     val decoder = summon[StringDecoder[String]]
@@ -26,3 +26,4 @@ class StringDecoderSpec extends munit.FunSuite:
     val decoder = summon[StringDecoder[ValidatedEmail]]
     assert(decoder.decode("not-an-email").isLeft)
   }
+}

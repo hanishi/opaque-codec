@@ -2,7 +2,7 @@ package domain
 
 import codec.StringDecoder
 
-object ValidatedEmail:
+object ValidatedEmail {
   opaque type ValidatedEmail <: String = String
 
   def apply(value: String): Either[String, ValidatedEmail] =
@@ -11,5 +11,7 @@ object ValidatedEmail:
 
   // No =:= export — encoding works automatically via <:< from the upper bound.
   // Decoding goes through the smart constructor to enforce validation.
-  given StringDecoder[ValidatedEmail] with
+  given StringDecoder[ValidatedEmail] with {
     def decode(s: String): Either[String, ValidatedEmail] = apply(s)
+  }
+}

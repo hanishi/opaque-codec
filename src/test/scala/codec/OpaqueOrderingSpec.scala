@@ -7,7 +7,7 @@ import domain.Timestamp.Timestamp
 import domain.BidPrice.BidPrice
 import domain.CampaignSlug.CampaignSlug
 
-class OpaqueOrderingSpec extends munit.FunSuite:
+class OpaqueOrderingSpec extends munit.FunSuite {
 
   test("Ordering[UserId] auto-derives and sorts correctly") {
     val ids = List(domain.UserId("charlie"), domain.UserId("alice"), domain.UserId("bob"))
@@ -40,3 +40,4 @@ class OpaqueOrderingSpec extends munit.FunSuite:
     assertEquals(ord.min(a, b), a)
     assertEquals(ord.max(a, b), b)
   }
+}

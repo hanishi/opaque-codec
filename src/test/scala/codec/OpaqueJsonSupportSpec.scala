@@ -9,7 +9,7 @@ import domain.ImpressionTimestamp.ImpressionTimestamp
 import domain.BudgetAmount.BudgetAmount
 import domain.BidPrice.BidPrice
 
-class OpaqueJsonSupportSpec extends munit.FunSuite:
+class OpaqueJsonSupportSpec extends munit.FunSuite {
 
   // --- String-based ---
 
@@ -76,3 +76,4 @@ class OpaqueJsonSupportSpec extends munit.FunSuite:
       JsString("not-a-number").convertTo[BidPrice]
     }
   }
+}

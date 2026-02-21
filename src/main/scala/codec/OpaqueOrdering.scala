@@ -1,6 +1,6 @@
 package codec
 
-object OpaqueOrdering:
+object OpaqueOrdering {
 
   private def fromEvidence[T, U](to: T => U, ord: Ordering[U]): Ordering[T] =
     ord.on(to)
@@ -19,3 +19,4 @@ object OpaqueOrdering:
 
   inline given derivedBigDecimal[T](using inline ev: T =:= BigDecimal, ord: Ordering[BigDecimal]): Ordering[T] =
     fromEvidence(ev(_), ord)
+}

@@ -2,7 +2,7 @@ package codec
 
 import domain.Timestamp.Timestamp
 
-class LongEncoderSpec extends munit.FunSuite:
+class LongEncoderSpec extends munit.FunSuite {
 
   test("LongEncoder[Long] resolves and encodes") {
     val encoder = summon[LongEncoder[Long]]
@@ -14,3 +14,4 @@ class LongEncoderSpec extends munit.FunSuite:
     val ts = domain.Timestamp(1700000000L)
     assertEquals(encoder.encode(ts), 1700000000L)
   }
+}

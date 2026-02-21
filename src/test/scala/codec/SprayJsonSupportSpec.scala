@@ -9,7 +9,7 @@ import domain.SKU.SKU
 import domain.Timestamp.Timestamp
 import domain.ValidatedEmail.ValidatedEmail
 
-class SprayJsonSupportSpec extends munit.FunSuite:
+class SprayJsonSupportSpec extends munit.FunSuite {
 
   test("JsonFormat[UserId] serializes to JSON string and back") {
     val uid = domain.UserId("user-42")
@@ -70,3 +70,4 @@ class SprayJsonSupportSpec extends munit.FunSuite:
       JsString("not-an-email").convertTo[ValidatedEmail]
     }
   }
+}

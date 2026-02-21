@@ -6,7 +6,7 @@ import domain.Email.Email
 import domain.SKU.SKU
 import domain.Timestamp.Timestamp
 
-class OpaqueCodecSpec extends munit.FunSuite:
+class OpaqueCodecSpec extends munit.FunSuite {
 
   test("OpaqueCodec[String, String] resolves and round-trips") {
     val codec = summon[OpaqueCodec[String, String]]
@@ -48,3 +48,4 @@ class OpaqueCodecSpec extends munit.FunSuite:
     assertEquals(codec.encode(ts), 1700000000L)
     assertEquals(codec.decode(1700000000L), ts)
   }
+}
