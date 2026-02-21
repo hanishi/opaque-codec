@@ -12,10 +12,10 @@
 object CampaignId {
   opaque type CampaignId = String
   def apply(value: String): CampaignId = value              // String → CampaignId にラップ
-  extension (id: CampaignId) { def value: String = id }     // CampaignId → String にアンラップ
-  given Ordering[CampaignId] = Ordering.String.on(_.value)   // .value で String に到達する必要がある
-  given JsonFormat[CampaignId] with {                        // .value でシリアライズ
-    def write(id: CampaignId) = JsString(id.value)
+  extension (id: CampaignId) { def value: String = id }     // ① アンラップアクセサ
+  given Ordering[CampaignId] = Ordering.String.on(_.value)   // ② 手書きの Ordering
+  given JsonFormat[CampaignId] with {                        // ③ 手書きの JsonFormat
+    def write(id: CampaignId) = JsString(id.value)           //   （8行のボイラープレート）
     def read(json: JsValue) = json match {
       case JsString(s) => CampaignId(s)
       case other => deserializationError(s"Expected string, got $other")
@@ -24,7 +24,7 @@ object CampaignId {
 }
 ```
 
-`.value` エクステンションは、外部コードが基底の `String` を取り出す唯一の方法です。これがなければ `Ordering` も `JsonFormat` も配線できません — 基底の値にアクセスする必要があるすべての型クラスがこの手書きアクセサに依存し、すべての opaque type がそれを提供しなければなりません。
+`.value` エクステンション ① は、外部コードが基底の `String` を取り出す唯一の方法です。これがなければ `Ordering` ② も `JsonFormat` ③ も配線できません — 基底の値にアクセスする必要があるすべての型クラスがこの手書きアクセサに依存し、すべての opaque type がそれを提供しなければなりません。
 
 これを15以上の型に掛け合わせ、新しい型クラス（データベースカラムマッパー、protobuf コーデック、ログフォーマッタなど）を追加するたびに、型ごとのコストがさらに増えます。実装は毎回同一で、変わるのは型名だけです。`CPM` の算術演算や `URL.domain` の抽出のようなドメイン固有のロジックは確かに手書きが必要ですが、`JsonFormat` や `Ordering` の行は純粋なボイラープレートです。
 
@@ -34,9 +34,20 @@ object CampaignId {
 object CampaignId {
   opaque type CampaignId = String
   def apply(value: String): CampaignId = value
-  given CampaignId =:= String = summon
+  given CampaignId =:= String = summon                       // ①②③ を置き換え
 }
 ```
+
+各ボイラープレートの対応関係は以下の通りです：
+
+| Before（型ごとに手書き） | After（`=:=` から導出） |
+|---|---|
+| ① `extension (id: CampaignId) { def value: String = id }` | 不要 — ②③ は `.value` でアンラップするために存在していたが、汎用導出ルールが内部で `ev(_)` を使うため不要に |
+| ② `given Ordering[CampaignId] = Ordering.String.on(_.value)` | `OpaqueOrdering` により自動導出 |
+| ③ `given JsonFormat[CampaignId] with { ... }`（8行） | `OpaqueJsonSupport` により自動導出 |
+| **合計：型ごとに11行のボイラープレート** | **合計：型ごとに1行のエビデンス** |
+
+`.value` は ② と ③ が依存していた手動アンラップでした。`=:=` を使えば、汎用導出ルールが内部で `ev(_)` を呼び出して同じアンラップを行うため、型ごとのエクステンションは完全に不要になります。
 
 この1行が `JsonFormat`、`Ordering`、そして将来の型クラスインスタンスすべてを置き換えます。これらはすべて、エクスポートされた `=:=` エビデンスからコンパイラによって自動的に導出されます。ドメイン固有のエクステンションは本来あるべき場所 — コンパニオンに手書き — のままです。
 
