@@ -210,9 +210,9 @@ object UserId {
 val evidence = summon[UserId =:= String]    // ✗ compile error
 ```
 
-So we need two things: a generic derivation rule that works in terms of `=:=`, and a way to make the evidence available outside the companion.
+So the `=:=` is only available inside the companion. The solution: consume it there via `OpaqueCodec.fromEvidence` to produce a concrete instance, and export that instead.
 
-## The Solution: Generic Inline Derivation + Exported Evidence
+## The Solution: `OpaqueCodec.fromEvidence` + Concrete Export
 
 ### Step 1: The generic derivation rule
 
