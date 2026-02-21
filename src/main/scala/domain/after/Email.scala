@@ -1,7 +1,9 @@
 package domain.after
 
+import codec.OpaqueCodec
+
 object Email {
   opaque type Email = String
   def apply(value: String): Email = value
-  given Email =:= String = summon
+  given OpaqueCodec[Email, String] = OpaqueCodec.fromEvidence
 }

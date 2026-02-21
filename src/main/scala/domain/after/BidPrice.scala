@@ -1,7 +1,9 @@
 package domain.after
 
+import codec.OpaqueCodec
+
 object BidPrice {
   opaque type BidPrice = BigDecimal
   def apply(value: BigDecimal): BidPrice = value
-  given BidPrice =:= BigDecimal = summon
+  given OpaqueCodec[BidPrice, BigDecimal] = OpaqueCodec.fromEvidence
 }
