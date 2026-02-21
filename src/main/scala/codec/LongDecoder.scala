@@ -15,4 +15,7 @@ object LongDecoder {
 
   inline given derived[T](using inline ev: T =:= Long): LongDecoder[T] =
     fromConversion(ev.flip(_))
+
+  given fromCodec[T](using codec: OpaqueCodec[T, Long]): LongDecoder[T] =
+    (l: Long) => Right(codec.decode(l))
 }

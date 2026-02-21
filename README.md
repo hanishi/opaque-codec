@@ -34,30 +34,30 @@ With the pattern described here, each companion shrinks to a single line of evid
 object CampaignId {
   opaque type CampaignId = String
   def apply(value: String): CampaignId = value
-  given CampaignId =:= String = summon                       // replaces ①②③
+  given OpaqueCodec[CampaignId, String] = OpaqueCodec.fromEvidence  // replaces ①②③
 }
 ```
 
 Here's what each piece of boilerplate maps to:
 
-| Before (hand-written per type) | After (derived from `=:=`) |
+| Before (hand-written per type) | After (derived from `OpaqueCodec`) |
 |---|---|
-| ① `extension (id: CampaignId) { def value: String = id }` | Not needed — ② and ③ only existed because they called `.value` to unwrap; the generic derivation rules use `ev(_)` internally instead |
+| ① `extension (id: CampaignId) { def value: String = id }` | Not needed — ② and ③ only existed because they called `.value` to unwrap; the generic derivation rules use `codec.encode` internally instead |
 | ② `given Ordering[CampaignId] = Ordering.String.on(_.value)` | Derived automatically via `OpaqueOrdering` |
 | ③ `given JsonFormat[CampaignId] with { ... }` (8 lines) | Derived automatically via `OpaqueJsonSupport` |
 | **Total: 11 lines of boilerplate per type** | **Total: 1 line of evidence per type** |
 
-`.value` was the manual unwrap that ② and ③ depended on. With `=:=`, the generic derivation rules call `ev(_)` to do the same unwrapping internally, so the per-type extension disappears entirely.
+`.value` was the manual unwrap that ② and ③ depended on. With `OpaqueCodec`, the generic derivation rules use `codec.encode` to do the same unwrapping internally, so the per-type extension disappears entirely.
 
-That one line replaces the `JsonFormat`, the `Ordering`, and any future type class instance — all derived automatically by the compiler from the exported `=:=` evidence. The domain-specific extensions stay where they belong: hand-written in the companion.
+That one line replaces the `JsonFormat`, the `Ordering`, and any future type class instance — all derived automatically by the compiler from the exported `OpaqueCodec` instance. The domain-specific extensions stay where they belong: hand-written in the companion.
 
 **What you'll learn in this guide:**
 
 1. How opaque types work and their "inside vs. outside" visibility rule
 2. The problem: why the compiler can't automatically reuse a codec for the underlying type
-3. The solution: using type equality evidence (`=:=`) and `inline given` to derive instances generically
+3. The solution: using type equality evidence (`=:=`) and `OpaqueCodec.fromEvidence` to derive instances generically
 4. How to apply the pattern to real serialization libraries (Spray JSON as an example)
-5. How to derive `Ordering` and other standard type classes the same way
+5. How to derive `Ordering` and other standard type classes with a single universal rule
 6. How to handle validated types safely using `<:<` (subtype evidence)
 
 ## Background: Opaque Types in Scala 3
@@ -236,6 +236,11 @@ object OpaqueCodec {
       def decode(u: U): T = from(u)
     }
 
+  // Consume =:= evidence and produce a concrete OpaqueCodec.
+  // Called from inside companion objects where =:= is available.
+  inline def fromEvidence[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
+    fromConversion(ev(_), ev.flip(_))
+
   // For any type T that the compiler can prove equals U,
   // automatically create an OpaqueCodec[T, U]
   inline given derived[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
@@ -243,7 +248,12 @@ object OpaqueCodec {
 }
 ```
 
-Let's break down the `derived` method:
+Let's break down the key methods:
+
+- **`fromEvidence`** — a non-given `inline def` that companion objects call to produce a concrete `OpaqueCodec` from the `=:=` evidence available inside the companion. This is the primary way domain types export their codec.
+- **`derived`** — a `given` that the compiler can use when `=:=` evidence is already in implicit scope (e.g., for `OpaqueCodec[String, String]` via `<:<.refl`).
+
+Let's break down the `derived` method in detail:
 
 - **`inline given derived[T, U]`** — this is a generic given (sometimes called a "blanket given"): it can produce an `OpaqueCodec` for *any* pair of types `T` and `U`. The `inline` keyword tells the compiler to resolve everything at compile time and expand the body inline, so nothing remains at runtime.
 - **`(using inline ev: T =:= U)`** — this constrains which type pairs qualify. The compiler will only use this rule when it can prove `T =:= U`. Only types that are genuinely equal — including opaque types defined as their underlying type — will match.
@@ -251,9 +261,9 @@ Let's break down the `derived` method:
 
 Because everything is `inline`, the `=:=` conversions (which are identity casts) are erased entirely at compile time. The generated code has no conversion overhead, no allocation, no evidence object — just direct operations on the underlying type.
 
-### Step 2: Exporting the evidence
+### Step 2: Exporting a concrete `OpaqueCodec`
 
-The derivation rule above requires `T =:= U` to be in implicit scope. But as we saw, the compiler can only prove `UserId =:= String` *inside* the companion. We need to "export" that knowledge so it's available outside:
+The compiler can only prove `UserId =:= String` *inside* the companion. Rather than leaking raw `=:=` evidence (which causes problems — see the Ordering section below), we consume it inside the companion and export a concrete `OpaqueCodec` instance:
 
 ```scala
 object UserId {
@@ -261,22 +271,21 @@ object UserId {
 
   def apply(value: String): UserId = value
 
-  // Export the type equality evidence so it's available outside this object.
-  // Inside here, the compiler knows UserId = String, so summon succeeds.
-  // This given re-publishes that knowledge for external code to use.
-  given UserId =:= String = summon
+  // Consume the =:= evidence (available here, inside the companion)
+  // and export a concrete OpaqueCodec[UserId, String] instance.
+  given OpaqueCodec[UserId, String] = OpaqueCodec.fromEvidence
 }
 ```
 
-This line may look circular — we're defining a `given` using `summon`, which looks up a `given`. But it's not:
+Here's what happens:
 
-1. Inside this companion, the compiler already knows that `UserId = String` (it's a type alias here)
-2. So `summon[UserId =:= String]` succeeds using the compiler's built-in evidence
-3. The `given` declaration then re-exports that evidence so it's available outside the companion, where the type is opaque
+1. Inside this companion, the compiler knows `UserId = String`, so `fromEvidence` can summon `UserId =:= String`
+2. `fromEvidence` uses the evidence to build a concrete `OpaqueCodec[UserId, String]`
+3. The `given` declaration exports that concrete instance — not the raw `=:=` — so it's available outside the companion
 
-Without this line, code outside the companion has no way to prove `UserId =:= String`, and the generic derivation won't fire.
+The `=:=` is never leaked. External code sees only `OpaqueCodec[UserId, String]` — a two-type-parameter instance that the compiler can resolve without ambiguity (see the Ordering section for why this matters).
 
-This is still a significant win over writing codec instances by hand. You write **one line of evidence export** per opaque type, and you get derivation for *every* type class that uses the `=:=` pattern — `OpaqueCodec`, JSON formats, database column mappers, and anything else you build this way.
+This is a significant win over writing codec instances by hand. You write **one line** per opaque type, and you get derivation for *every* type class that takes `OpaqueCodec` — JSON formats, `Ordering`, database column mappers, and anything else you build this way.
 
 ## What the Compiler Does: Step by Step
 
@@ -289,10 +298,10 @@ summon[OpaqueCodec[UserId, String]]
 …here's what happens behind the scenes:
 
 1. **Search** — the compiler looks for an `OpaqueCodec[UserId, String]` in implicit scope
-2. **Match** — it finds `OpaqueCodec.derived[T, U]` and tries `T = UserId`, `U = String`
-3. **Prove** — `derived` requires `UserId =:= String`, so the compiler searches for that evidence. It finds the `given UserId =:= String` exported from `UserId`'s companion object
-4. **Construct** — with the evidence in hand, the compiler calls `fromConversion(ev(_), ev.flip(_))` to build the codec
-5. **Inline** — because both `derived` and `ev` are `inline`, the compiler expands everything at compile time. The `=:=` conversions (which are identity functions) are erased entirely, leaving zero runtime overhead
+2. **Find** — it finds the concrete `given OpaqueCodec[UserId, String]` exported from `UserId`'s companion object (produced by `fromEvidence`)
+3. **Done** — no further resolution needed. The instance is concrete, not derived through `=:=` at the call site
+
+Because `fromEvidence` is `inline`, the `=:=` conversions (which are identity functions) are erased at compile time. The generated code has zero runtime overhead.
 
 The result: you get an `OpaqueCodec[UserId, String]` that is type-safe at compile time and free at runtime.
 
@@ -309,35 +318,35 @@ summon[OpaqueCodec[BidPrice, BigDecimal]] // BigDecimal-based, same pattern
 
 ## Scaling Up: Multiple Opaque Types
 
-The pattern scales cleanly. Each new opaque type needs only the evidence export:
+The pattern scales cleanly. Each new opaque type needs only the `OpaqueCodec` export:
 
 ```scala
 object OrderId {
   opaque type OrderId = String
   def apply(value: String): OrderId = value
-  given OrderId =:= String = summon
+  given OpaqueCodec[OrderId, String] = OpaqueCodec.fromEvidence
 }
 
 object Email {
   opaque type Email = String
   def apply(value: String): Email = value
-  given Email =:= String = summon
+  given OpaqueCodec[Email, String] = OpaqueCodec.fromEvidence
 }
 
 object Timestamp {
   opaque type Timestamp = Long
   def apply(value: Long): Timestamp = value
-  given Timestamp =:= Long = summon
+  given OpaqueCodec[Timestamp, Long] = OpaqueCodec.fromEvidence
 }
 
 object BidPrice {
   opaque type BidPrice = BigDecimal
   def apply(value: BigDecimal): BidPrice = value
-  given BidPrice =:= BigDecimal = summon
+  given OpaqueCodec[BidPrice, BigDecimal] = OpaqueCodec.fromEvidence
 }
 ```
 
-All of these types — `String`-based, `Long`-based, `BigDecimal`-based — get `OpaqueCodec` instances with no per-type codec boilerplate, all from the single `OpaqueCodec.derived` rule.
+All of these types — `String`-based, `Long`-based, `BigDecimal`-based — get `OpaqueCodec` instances, `Ordering`, JSON formats, and any future type class with no per-type boilerplate beyond this one line.
 
 ## Practical Example: Spray JSON Integration
 
@@ -381,9 +390,9 @@ Because `OpaqueCodec[UserId, String]` is derived automatically, `opaqueStringJso
 
 The `=:=` pattern isn't limited to serialization. Any type class that exists for the underlying type can be derived for the opaque type the same way. `Ordering` is a natural example — in a codebase with many opaque identifier types, you'd otherwise write `given Ordering[CampaignId] = Ordering.String.on(_.value)` for each one.
 
-### The naive approach and why it doesn't work
+### The naive approach with raw `=:=` and why it doesn't work
 
-You might expect a single generic rule to cover all cases:
+If companions exported raw `=:=` evidence (i.e., `given UserId =:= String = summon`), you might expect a single generic rule to cover all cases:
 
 ```scala
 // ✗ Does not compile — ambiguous =:= evidence
@@ -397,11 +406,12 @@ This fails because Scala 3's `<:<.refl` provides `T =:= T` for any type. When th
 
 This wasn't a problem for `OpaqueCodec.derived` because the call sites always specify both type parameters — `summon[OpaqueCodec[UserId, String]]` — leaving nothing to infer. But `List[UserId].sorted` only tells the compiler it needs `Ordering[UserId]`; the underlying type must be discovered, and that's where the ambiguity arises.
 
-### The fix: pin the underlying type
+### ~~The fix: pin the underlying type~~
 
-The solution is to provide a derivation rule per underlying type. When `U` is fixed to `String`, the only `=:= String` evidence the compiler finds is the one exported from the companion — `<:<.refl[UserId]` gives `UserId =:= UserId`, which doesn't match `T =:= String`:
+~~The solution is to provide a derivation rule per underlying type. When `U` is fixed to `String`, the only `=:= String` evidence the compiler finds is the one exported from the companion — `<:<.refl[UserId]` gives `UserId =:= UserId`, which doesn't match `T =:= String`:~~
 
 ```scala
+// ✗ Previously required — one rule per underlying type
 object OpaqueOrdering {
 
   private def fromEvidence[T, U](to: T => U, ord: Ordering[U]): Ordering[T] =
@@ -421,7 +431,22 @@ object OpaqueOrdering {
 }
 ```
 
-This is less elegant than a single rule, but it's still a single import that replaces every hand-written `Ordering` instance:
+~~This is less elegant than a single rule, but it's still a single import that replaces every hand-written `Ordering` instance.~~
+
+### The real fix: export concrete `OpaqueCodec` instead of raw `=:=`
+
+The pinning approach above is no longer needed. By having each companion export a concrete `OpaqueCodec[T, U]` instead of raw `=:=` evidence, the ambiguity disappears entirely. `OpaqueOrdering` becomes a single universal rule:
+
+```scala
+object OpaqueOrdering {
+  given derived[T, U](using codec: OpaqueCodec[T, U], ord: Ordering[U]): Ordering[T] =
+    ord.on(codec.encode)
+}
+```
+
+This works because `OpaqueCodec[UserId, U]` can only resolve to the concrete `OpaqueCodec[UserId, String]` exported from the companion — the compiler infers `U = String` directly. There's no `<:<.refl` in play because `OpaqueCodec` is an unrelated trait, not part of the `=:=`/`<:<` hierarchy.
+
+The same single import still works:
 
 ```scala
 import codec.OpaqueOrdering.given
@@ -430,9 +455,7 @@ val ids = List(UserId("charlie"), UserId("alice"), UserId("bob"))
 ids.sorted  // List(alice, bob, charlie) — Ordering[UserId] derived automatically
 ```
 
-### Why OpaqueCodec doesn't have this problem
-
-`OpaqueCodec[T, U]` uses the same two-type-parameter `=:=` derivation, but it works because call sites always specify both `T` and `U` explicitly — for example, `summon[OpaqueCodec[UserId, String]]`. With `U` already fixed to `String`, there's no ambiguity. `Ordering[T]` doesn't carry the underlying type in its signature, so the compiler must infer it, and that's where `<:<.refl` creates the conflict.
+Adding a new underlying type (e.g., `opaque type TraceId = UUID`) requires no changes to `OpaqueOrdering` — the single rule covers it automatically.
 
 ## Limitations
 
@@ -691,7 +714,7 @@ To reproduce: `sbt 'Jmh/run benchmark.CodecBenchmark'`
 
 ## Conclusion
 
-By combining Scala 3's `opaque type`, type equality evidence (`=:=`), and `inline given`, you get type class derivation that is type-safe, zero-cost, and nearly boilerplate-free. The generalized `OpaqueCodec[T, U]` handles any underlying type — `String`, `Long`, `BigDecimal`, or anything else — with a single derivation rule.
+By combining Scala 3's `opaque type`, type equality evidence (`=:=`), and `OpaqueCodec.fromEvidence`, you get type class derivation that is type-safe, zero-cost, and nearly boilerplate-free. The generalized `OpaqueCodec[T, U]` handles any underlying type — `String`, `Long`, `BigDecimal`, or anything else. Because each companion exports a concrete `OpaqueCodec` instance (not raw `=:=`), library integrations like `OpaqueOrdering` can use a single universal `[T, U]` rule — no per-underlying-type pinning needed.
 
 For validated types, the subtype evidence (`<:<`) provided by an upper bound gives you automatic encoding without opening a backdoor to bypass validation. Decoding goes through a hand-written instance that enforces your constraints.
 

@@ -15,4 +15,7 @@ object StringEncoder {
 
   inline given derived[T](using inline ev: T <:< String): StringEncoder[T] =
     fromConversion(ev(_))
+
+  given fromCodec[T](using codec: OpaqueCodec[T, String]): StringEncoder[T] =
+    (t: T) => codec.encode(t)
 }

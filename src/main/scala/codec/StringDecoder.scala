@@ -15,4 +15,7 @@ object StringDecoder {
 
   inline given derived[T](using inline ev: T =:= String): StringDecoder[T] =
     fromConversion(ev.flip(_))
+
+  given fromCodec[T](using codec: OpaqueCodec[T, String]): StringDecoder[T] =
+    (s: String) => Right(codec.decode(s))
 }

@@ -16,6 +16,9 @@ object OpaqueCodec {
       def decode(u: U): T = from(u)
     }
 
+  inline def fromEvidence[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
+    fromConversion(ev(_), ev.flip(_))
+
   inline given derived[T, U](using inline ev: T =:= U): OpaqueCodec[T, U] =
     fromConversion(ev(_), ev.flip(_))
 }
