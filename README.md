@@ -9,13 +9,22 @@ This project shows a pattern for **automatically deriving type class instances f
 The pattern emerged from a real problem in a programmatic ad platform built with Pekko Cluster. The system defines dozens of opaque types — advertiser IDs, campaign IDs, creative IDs, site IDs, CPMs, budgets, spend tracking — all of which need `JsonFormat` instances for Spray JSON APIs, `Ordering` for sorted collections, and serialization support for Pekko cluster communication. Every opaque type carried the same mechanical wiring:
 
 ```scala
-object CampaignId:
+object CampaignId {
   opaque type CampaignId = String
-  inline def apply(value: String): CampaignId = value
-  extension (id: CampaignId) { inline def value: String = id }
-  given Ordering[CampaignId] = Ordering.String.on(_.value)
-  given JsonFormat[CampaignId] = StringCodec.sprayJsonFormat[CampaignId]
+  def apply(value: String): CampaignId = value              // wrap String → CampaignId
+  extension (id: CampaignId) { def value: String = id }     // ① unwrap accessor
+  given Ordering[CampaignId] = Ordering.String.on(_.value)   // ② hand-written Ordering
+  given JsonFormat[CampaignId] with {                        // ③ hand-written JsonFormat
+    def write(id: CampaignId) = JsString(id.value)           //   (8 lines of boilerplate)
+    def read(json: JsValue) = json match {
+      case JsString(s) => CampaignId(s)
+      case other => deserializationError(s"Expected string, got $other")
+    }
+  }
+}
 ```
+
+The `.value` extension ① is the only way for outside code to recover the underlying `String`. Without it, neither `Ordering` ② nor `JsonFormat` ③ can be wired — every type class that needs access to the underlying value depends on this hand-written accessor, and every opaque type must provide one.
 
 Multiply that across 15+ types, and each new type class you add (database column mappers, protobuf codecs, logging formatters) multiplies the per-type cost again. The implementations are identical every time — only the type name changes. Domain-specific logic like `CPM` arithmetic or `URL.domain` extraction is genuinely hand-written, but the `JsonFormat` and `Ordering` lines are pure boilerplate.
 
@@ -25,9 +34,20 @@ With the pattern described here, each companion shrinks to a single line of evid
 object CampaignId {
   opaque type CampaignId = String
   def apply(value: String): CampaignId = value
-  given CampaignId =:= String = summon
+  given CampaignId =:= String = summon                       // replaces ①②③
 }
 ```
+
+Here's what each piece of boilerplate maps to:
+
+| Before (hand-written per type) | After (derived from `=:=`) |
+|---|---|
+| ① `extension (id: CampaignId) { def value: String = id }` | Not needed — ② and ③ only existed because they called `.value` to unwrap; the generic derivation rules use `ev(_)` internally instead |
+| ② `given Ordering[CampaignId] = Ordering.String.on(_.value)` | Derived automatically via `OpaqueOrdering` |
+| ③ `given JsonFormat[CampaignId] with { ... }` (8 lines) | Derived automatically via `OpaqueJsonSupport` |
+| **Total: 11 lines of boilerplate per type** | **Total: 1 line of evidence per type** |
+
+`.value` was the manual unwrap that ② and ③ depended on. With `=:=`, the generic derivation rules call `ev(_)` to do the same unwrapping internally, so the per-type extension disappears entirely.
 
 That one line replaces the `JsonFormat`, the `Ordering`, and any future type class instance — all derived automatically by the compiler from the exported `=:=` evidence. The domain-specific extensions stay where they belong: hand-written in the companion.
 

@@ -1,4 +1,4 @@
-package domain
+package domain.after
 
 object BudgetAmount {
   opaque type BudgetAmount = BigDecimal

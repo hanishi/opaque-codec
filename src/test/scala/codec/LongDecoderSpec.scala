@@ -1,6 +1,6 @@
 package codec
 
-import domain.Timestamp.Timestamp
+import domain.after.Timestamp.Timestamp
 
 class LongDecoderSpec extends munit.FunSuite {
 
@@ -11,7 +11,7 @@ class LongDecoderSpec extends munit.FunSuite {
 
   test("LongDecoder[Timestamp] auto-derives via =:= and decodes") {
     val decoder = summon[LongDecoder[Timestamp]]
-    val expected = domain.Timestamp(1700000000L)
+    val expected = domain.after.Timestamp(1700000000L)
     assertEquals(decoder.decode(1700000000L), Right(expected))
   }
 }

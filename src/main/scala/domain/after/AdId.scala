@@ -1,4 +1,4 @@
-package domain
+package domain.after
 
 object AdId {
   opaque type AdId = Long

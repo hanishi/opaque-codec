@@ -1,4 +1,4 @@
-package domain
+package domain.after
 
 object BidPrice {
   opaque type BidPrice = BigDecimal

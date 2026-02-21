@@ -1,7 +1,7 @@
 package codec
 
-import domain.UserId.UserId
-import domain.ValidatedEmail.ValidatedEmail
+import domain.after.UserId.UserId
+import domain.after.ValidatedEmail.ValidatedEmail
 
 class StringDecoderSpec extends munit.FunSuite {
 
@@ -12,13 +12,13 @@ class StringDecoderSpec extends munit.FunSuite {
 
   test("StringDecoder[UserId] auto-derives via =:= and decodes") {
     val decoder = summon[StringDecoder[UserId]]
-    val expected = domain.UserId("user-42")
+    val expected = domain.after.UserId("user-42")
     assertEquals(decoder.decode("user-42"), Right(expected))
   }
 
   test("StringDecoder[ValidatedEmail] decodes valid input through validation") {
     val decoder = summon[StringDecoder[ValidatedEmail]]
-    val Right(ve) = domain.ValidatedEmail("alice@example.com"): @unchecked
+    val Right(ve) = domain.after.ValidatedEmail("alice@example.com"): @unchecked
     assertEquals(decoder.decode("alice@example.com"), Right(ve))
   }
 

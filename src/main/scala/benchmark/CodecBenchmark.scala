@@ -3,8 +3,8 @@ package benchmark
 import org.openjdk.jmh.annotations.*
 import java.util.concurrent.TimeUnit
 import codec.OpaqueCodec
-import domain.UserId.UserId
-import domain.OrderId.OrderId
+import domain.after.UserId.UserId
+import domain.after.OrderId.OrderId
 
 /**
  * Measures whether opaque types add any overhead to codec operations.
@@ -27,8 +27,8 @@ import domain.OrderId.OrderId
 class CodecBenchmark {
 
   private val rawString: String = "user-42"
-  private val userId: UserId = domain.UserId("user-42")
-  private val orderId: OrderId = domain.OrderId("order-99")
+  private val userId: UserId = domain.after.UserId("user-42")
+  private val orderId: OrderId = domain.after.OrderId("order-99")
 
   private val userIdCodec = summon[OpaqueCodec[UserId, String]]
   private val orderIdCodec = summon[OpaqueCodec[OrderId, String]]

@@ -1,9 +1,7 @@
-package domain
+package domain.after
 
 object Timestamp {
   opaque type Timestamp = Long
-
   def apply(value: Long): Timestamp = value
-
   given Timestamp =:= Long = summon
 }

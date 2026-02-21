@@ -1,12 +1,12 @@
 import codec.{OpaqueCodec, StringEncoder, StringDecoder, LongEncoder, LongDecoder}
 import codec.OpaqueJsonSupport.given
 import spray.json.*
-import domain.UserId.UserId
-import domain.OrderId.OrderId
-import domain.Email.Email
-import domain.SKU.SKU
-import domain.Timestamp.Timestamp
-import domain.ValidatedEmail.ValidatedEmail
+import domain.after.UserId.UserId
+import domain.after.OrderId.OrderId
+import domain.after.Email.Email
+import domain.after.SKU.SKU
+import domain.after.Timestamp.Timestamp
+import domain.after.ValidatedEmail.ValidatedEmail
 
 @main
 def main(): Unit =
@@ -22,7 +22,7 @@ def main(): Unit =
 
   // --- OpaqueCodec[UserId, String]: auto-derived via =:= evidence ---
   val userIdCodec = summon[OpaqueCodec[UserId, String]]
-  val uid = domain.UserId("user-42")
+  val uid = domain.after.UserId("user-42")
   println("OpaqueCodec[UserId, String]")
   println(s"  encode(UserId(\"user-42\")) = ${userIdCodec.encode(uid)}")
   println(s"  decode(\"user-42\")         = ${userIdCodec.decode("user-42")}")
@@ -30,7 +30,7 @@ def main(): Unit =
 
   // --- OpaqueCodec[OrderId, String] ---
   val orderIdCodec = summon[OpaqueCodec[OrderId, String]]
-  val oid = domain.OrderId("order-99")
+  val oid = domain.after.OrderId("order-99")
   println("OpaqueCodec[OrderId, String]")
   println(s"  encode(OrderId(\"order-99\")) = ${orderIdCodec.encode(oid)}")
   println(s"  decode(\"order-99\")          = ${orderIdCodec.decode("order-99")}")
@@ -38,7 +38,7 @@ def main(): Unit =
 
   // --- OpaqueCodec[Email, String] ---
   val emailCodec = summon[OpaqueCodec[Email, String]]
-  val email = domain.Email("alice@example.com")
+  val email = domain.after.Email("alice@example.com")
   println("OpaqueCodec[Email, String]")
   println(s"  encode(Email(\"alice@example.com\")) = ${emailCodec.encode(email)}")
   println(s"  decode(\"alice@example.com\")         = ${emailCodec.decode("alice@example.com")}")
@@ -46,7 +46,7 @@ def main(): Unit =
 
   // --- OpaqueCodec[SKU, String] ---
   val skuCodec = summon[OpaqueCodec[SKU, String]]
-  val sku = domain.SKU("SKU-1234")
+  val sku = domain.after.SKU("SKU-1234")
   println("OpaqueCodec[SKU, String]")
   println(s"  encode(SKU(\"SKU-1234\")) = ${skuCodec.encode(sku)}")
   println(s"  decode(\"SKU-1234\")      = ${skuCodec.decode("SKU-1234")}")
@@ -54,7 +54,7 @@ def main(): Unit =
 
   // --- OpaqueCodec[Timestamp, Long]: auto-derived via =:= evidence ---
   val tsCodec = summon[OpaqueCodec[Timestamp, Long]]
-  val ts = domain.Timestamp(1700000000L)
+  val ts = domain.after.Timestamp(1700000000L)
   println("OpaqueCodec[Timestamp, Long]")
   println(s"  encode(Timestamp(1700000000L)) = ${tsCodec.encode(ts)}")
   println(s"  decode(1700000000L)            = ${tsCodec.decode(1700000000L)}")
@@ -107,13 +107,13 @@ def main(): Unit =
 
   // ValidatedEmail.apply enforces that the value contains "@"
   println("ValidatedEmail.apply with validation:")
-  println(s"  apply(\"alice@example.com\") = ${domain.ValidatedEmail("alice@example.com")}")
-  println(s"  apply(\"not-an-email\")      = ${domain.ValidatedEmail("not-an-email")}")
+  println(s"  apply(\"alice@example.com\") = ${domain.after.ValidatedEmail("alice@example.com")}")
+  println(s"  apply(\"not-an-email\")      = ${domain.after.ValidatedEmail("not-an-email")}")
   println()
 
   // StringEncoder resolves automatically via <:< — no =:= export needed
   val veEncoder = summon[StringEncoder[ValidatedEmail]]
-  val Right(ve) = domain.ValidatedEmail("alice@example.com"): @unchecked
+  val Right(ve) = domain.after.ValidatedEmail("alice@example.com"): @unchecked
   println("StringEncoder[ValidatedEmail] (auto-derived via <:<):")
   println(s"  encode(ve) = ${veEncoder.encode(ve)}")
   println()

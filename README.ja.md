@@ -9,13 +9,22 @@
 このパターンは、Pekko Cluster で構築されたプログラマティック広告プラットフォームの実際の問題から生まれました。このシステムでは多数の opaque type — 広告主ID、キャンペーンID、クリエイティブID、サイトID、CPM、予算、支出追跡など — を定義しており、それらすべてに Spray JSON API 用の `JsonFormat` インスタンス、ソート済みコレクション用の `Ordering`、Pekko クラスタ通信用のシリアライゼーションサポートが必要です。すべての opaque type が同じ機械的な配線を抱えていました：
 
 ```scala
-object CampaignId:
+object CampaignId {
   opaque type CampaignId = String
-  inline def apply(value: String): CampaignId = value
-  extension (id: CampaignId) { inline def value: String = id }
-  given Ordering[CampaignId] = Ordering.String.on(_.value)
-  given JsonFormat[CampaignId] = StringCodec.sprayJsonFormat[CampaignId]
+  def apply(value: String): CampaignId = value              // String → CampaignId にラップ
+  extension (id: CampaignId) { def value: String = id }     // CampaignId → String にアンラップ
+  given Ordering[CampaignId] = Ordering.String.on(_.value)   // .value で String に到達する必要がある
+  given JsonFormat[CampaignId] with {                        // .value でシリアライズ
+    def write(id: CampaignId) = JsString(id.value)
+    def read(json: JsValue) = json match {
+      case JsString(s) => CampaignId(s)
+      case other => deserializationError(s"Expected string, got $other")
+    }
+  }
+}
 ```
+
+`.value` エクステンションは、外部コードが基底の `String` を取り出す唯一の方法です。これがなければ `Ordering` も `JsonFormat` も配線できません — 基底の値にアクセスする必要があるすべての型クラスがこの手書きアクセサに依存し、すべての opaque type がそれを提供しなければなりません。
 
 これを15以上の型に掛け合わせ、新しい型クラス（データベースカラムマッパー、protobuf コーデック、ログフォーマッタなど）を追加するたびに、型ごとのコストがさらに増えます。実装は毎回同一で、変わるのは型名だけです。`CPM` の算術演算や `URL.domain` の抽出のようなドメイン固有のロジックは確かに手書きが必要ですが、`JsonFormat` や `Ordering` の行は純粋なボイラープレートです。
 

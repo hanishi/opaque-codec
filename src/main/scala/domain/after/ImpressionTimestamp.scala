@@ -1,4 +1,4 @@
-package domain
+package domain.after
 
 object ImpressionTimestamp {
   opaque type ImpressionTimestamp = Long

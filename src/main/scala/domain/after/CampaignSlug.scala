@@ -1,4 +1,4 @@
-package domain
+package domain.after
 
 object CampaignSlug {
   opaque type CampaignSlug = String
