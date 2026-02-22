@@ -210,9 +210,9 @@ object UserId {
 val evidence = summon[UserId =:= String]    // ✗ compile error
 ```
 
-So we need two things: a generic derivation rule that works in terms of `=:=`, and a way to make the evidence available outside the companion.
+So the `=:=` is only available inside the companion. The solution: consume it there via `OpaqueCodec.fromEvidence` to produce a concrete instance, and export that instead.
 
-## The Solution: Generic Inline Derivation + Exported Evidence
+## The Solution: `OpaqueCodec.fromEvidence` + Concrete Export
 
 ### Step 1: The generic derivation rule
 
@@ -440,11 +440,13 @@ The pinning approach above is no longer needed. By having each companion export 
 ```scala
 object OpaqueOrdering {
   given derived[T, U](using codec: OpaqueCodec[T, U], ord: Ordering[U]): Ordering[T] =
-    ord.on(codec.encode)
+    ord.asInstanceOf[Ordering[T]]
 }
 ```
 
 This works because `OpaqueCodec[UserId, U]` can only resolve to the concrete `OpaqueCodec[UserId, String]` exported from the companion — the compiler infers `U = String` directly. There's no `<:<.refl` in play because `OpaqueCodec` is an unrelated trait, not part of the `=:=`/`<:<` hierarchy.
+
+The `asInstanceOf` cast is safe here: `OpaqueCodec[T, U]` is constructed from `T =:= U` evidence inside the companion, which guarantees `T` and `U` erase to the same JVM type. `Ordering[U]` already IS `Ordering[T]` at runtime — no wrapping or delegation needed.
 
 The same single import still works:
 
@@ -455,7 +457,259 @@ val ids = List(UserId("charlie"), UserId("alice"), UserId("bob"))
 ids.sorted  // List(alice, bob, charlie) — Ordering[UserId] derived automatically
 ```
 
-Adding a new underlying type (e.g., `opaque type TraceId = UUID`) requires no changes to `OpaqueOrdering` — the single rule covers it automatically.
+Adding a new underlying type requires no changes to `OpaqueOrdering` — the single rule covers it automatically, as long as the underlying type has an `Ordering` instance.
+
+### Practical tip: use `String` as the underlying type for IDs
+
+When you need a sortable unique identifier — such as a ULID-based trace ID — store it as a plain `String`:
+
+```scala
+object TraceId {
+  opaque type TraceId = String
+  def apply(value: String): TraceId = value
+  def newTraceId: TraceId = ULID.newULIDString   // generate, store as String
+  given OpaqueCodec[TraceId, String] = OpaqueCodec.fromEvidence
+}
+```
+
+A ULID is a 128-bit value (48-bit timestamp + 80-bit random) encoded as a 26-character Crockford Base32 string. The encoding is designed so that lexicographic string comparison equals chronological order — which means `Ordering[String]` gives you time-based sorting for free via `OpaqueOrdering`. No special `Ordering` instance, no wrapper objects, no extra library needed. This project includes a minimal `ULID.newULIDString` generator (see `patterns/ulid/ULID.scala`) that produces monotonically increasing strings within the same millisecond.
+
+## Beyond Ordering: Deriving Numeric
+
+The same pattern extends to `Numeric` — a type class that provides arithmetic operations. In a codebase with numeric opaque types like `BidPrice` or `Timestamp`, you'd otherwise write `Numeric[BidPrice]` instances by hand, delegating each operation to `BigDecimal`.
+
+### OpaqueNumeric: a single universal rule
+
+```scala
+object OpaqueNumeric {
+  given derived[T, U](using codec: OpaqueCodec[T, U], num: Numeric[U]): Numeric[T] =
+    num.asInstanceOf[Numeric[T]]
+}
+```
+
+The same `asInstanceOf` technique as `OpaqueOrdering` — since `T` and `U` erase to the same JVM type, `Numeric[U]` is reused directly with zero overhead.
+
+`OpaqueNumeric` also provides operator extension methods (`+`, `-`, `*`, unary `-`) so you can write natural arithmetic expressions. Import with `{given, *}` to get both the `Numeric` instance and the operators:
+
+```scala
+import codec.OpaqueNumeric.{given, *}
+```
+
+Because `Numeric` extends `Ordering`, this also provides ordering. For numeric opaque types, use `OpaqueNumeric` instead of `OpaqueOrdering` to avoid ambiguous implicits.
+
+### Inches and Centimeters: extension methods + arithmetic
+
+A classic example from *Advanced Programming in Scala, 5th Edition* — unit-safe length types:
+
+```scala
+object Inches {
+  opaque type Inches = Double
+  def apply(value: Double): Inches = value
+  given OpaqueCodec[Inches, Double] = OpaqueCodec.fromEvidence
+
+  extension (i: Inches) {
+    def toCentimeters: Centimeters.Centimeters = Centimeters(i * 2.54)
+    def value: Double = i
+  }
+}
+
+object Centimeters {
+  opaque type Centimeters = Double
+  def apply(value: Double): Centimeters = value
+  given OpaqueCodec[Centimeters, Double] = OpaqueCodec.fromEvidence
+
+  extension (c: Centimeters) {
+    def toInches: Inches.Inches = Inches(c / 2.54)
+    def value: Double = c
+  }
+}
+```
+
+The extension methods add domain-specific conversion logic. `OpaqueNumeric` adds arithmetic automatically. The type system prevents mixing units — `Inches + Centimeters` won't compile:
+
+```scala
+import codec.OpaqueNumeric.{given, *}
+
+Inches(1.0) + Inches(2.0)       // ✓ Inches(3.0)
+Inches(5.0) - Inches(2.0)       // ✓ Inches(3.0)
+-Inches(3.0)                     // ✓ Inches(-3.0)
+List(Inches(1), Inches(2)).sum   // ✓ Inches(3.0)
+Inches(1.0) + Centimeters(2.0)  // ✗ compile error — type mismatch
+```
+
+### Why `asInstanceOf` and not delegation?
+
+A naive approach wraps every `Numeric` operation through `codec.encode`/`codec.decode`:
+
+```scala
+// ✗ ~2x slower — 4 virtual dispatches per encode/decode
+def plus(x: T, y: T): T = codec.decode(num.plus(codec.encode(x), codec.encode(y)))
+```
+
+Each `codec.encode(x)` traverses: `OpaqueCodec` vtable → `Function1` vtable → `=:=` vtable → identity. That's 4 levels of virtual dispatch for what is ultimately a no-op. JMH benchmarks confirm the overhead:
+
+```
+Benchmark                         Mode  Cnt  Score    Error   Units
+NumericBenchmark.raw_compare     thrpt    5   0.710 ±  0.064  ops/ns   ← Numeric[BigDecimal] directly
+NumericBenchmark.codec_compare   thrpt    5   0.287 ±  0.007  ops/ns   ← delegation via codec.encode/decode
+NumericBenchmark.cast_compare    thrpt    5   0.713 ±  0.054  ops/ns   ← asInstanceOf (zero overhead)
+```
+
+The `asInstanceOf` approach reuses the existing `Numeric[U]` instance directly — no wrapping, no delegation, no virtual dispatch overhead. This is safe because `OpaqueCodec[T, U]` can only be constructed from `T =:= U` evidence, which guarantees `T` and `U` erase to the same JVM type.
+
+## Pattern: Interface Narrowing via Opaque Types (IArray)
+
+Opaque types can restrict an existing mutable API to a read-only view — the same technique Scala's standard library uses for `IArray`.
+
+### The idea
+
+`ArrayBuffer` is mutable. By aliasing it behind an opaque type boundary and only exposing read-only extension methods, we get an immutable interface with zero wrapping overhead:
+
+```scala
+object ImmutableBuffer {
+  opaque type ImmutableBuffer[+T] = ArrayBuffer[? <: T]
+
+  def apply[T](elems: T*): ImmutableBuffer[T] = ArrayBuffer.from(elems)
+  def unsafeFromArrayBuffer[T](buf: ArrayBuffer[T]): ImmutableBuffer[T] = buf
+
+  extension [T](buf: ImmutableBuffer[T]) {
+    def apply(index: Int): T = buf(index)
+    def size: Int = buf.size
+    def head: T = buf.head
+    def last: T = buf.last
+    def toList: List[T] = buf.toList
+    def map[U](f: T => U): ImmutableBuffer[U] = ArrayBuffer.from(buf.map(f))
+    def filter(p: T => Boolean): ImmutableBuffer[T] = ArrayBuffer.from(buf.filter(p))
+    // No add/remove/update — hidden by the opaque boundary
+  }
+}
+```
+
+### Key techniques
+
+**Covariance on an invariant backing type.** `ArrayBuffer` is invariant (`ArrayBuffer[T]`), but the opaque type declares `ImmutableBuffer[+T]` using the wildcard `ArrayBuffer[? <: T]`. This mirrors `IArray`:
+
+```
+opaque type IArray[+T] = Array[? <: T]           // stdlib
+opaque type ImmutableBuffer[+T] = ArrayBuffer[? <: T]  // our version
+```
+
+The covariance is safe because the opaque boundary hides all mutation methods — you can only read, not write.
+
+**`unsafeFromArrayBuffer` as an explicit escape hatch.** Like `IArray.unsafeFromArray`, this shares the backing storage without copying. Mutations through the original reference are visible — hence "unsafe":
+
+```scala
+val backing = ArrayBuffer(1, 2, 3)
+val buf = ImmutableBuffer.unsafeFromArrayBuffer(backing)
+backing(0) = 99
+buf(0)  // 99 — the mutation is visible
+```
+
+## Pitfall: Matchable and Runtime Safety
+
+Opaque types are a compile-time concept. At runtime, they're fully erased to their underlying type. This creates pitfalls when you use runtime type checks.
+
+### The problem
+
+Consider two opaque types backed by `String`:
+
+```scala
+object Street {
+  opaque type Street = String
+  def apply(value: String): Street = value
+}
+
+object City {
+  opaque type City = String
+  def apply(value: String): City = value
+}
+```
+
+At compile time, `Street` and `City` are distinct types. At runtime, both are `String`:
+
+```scala
+val street: Street = Street("123 Main St")
+
+street.isInstanceOf[String]  // true — opaque type is erased
+
+(street: Any) match {
+  case s: String => "matched as String"  // this branch executes
+  case _         => "not matched"
+}
+```
+
+### What doesn't work at runtime
+
+- **`isInstanceOf`** always sees the underlying type — it cannot distinguish `Street` from `City`
+- **Pattern matching** on type pierces the opaque boundary
+- **`ClassTag`** for `Street` and `String` share the same `runtimeClass`
+- **`asInstanceOf`** can cast between opaque types sharing the same underlying type
+
+### Mitigation: `strictEquality`
+
+With universal equality (the default), `Street("x") == City("x")` returns `true` at runtime — the opaque type distinction is invisible. Enabling `strictEquality` prevents this:
+
+```scala
+import scala.language.strictEquality
+
+Street("x") == City("x")  // ✗ compile error without CanEqual instance
+```
+
+### Takeaway
+
+Opaque types provide **compile-time** safety only. Never rely on runtime type checks (`isInstanceOf`, pattern matching on type, `ClassTag`) to distinguish opaque types. Use the type system — not runtime reflection — to enforce boundaries.
+
+## Opaque Types in the Scala Standard Library
+
+The patterns demonstrated in this project aren't academic exercises — they appear in Scala's own standard library. Examining the stdlib source reveals three notable uses.
+
+### `IArray`: read-only arrays via covariance trick
+
+From `scala.IArray`:
+
+```scala
+opaque type IArray[+T] = Array[? <: T]
+```
+
+`Array` is invariant and mutable. By wrapping it in an opaque type with a covariant type parameter and a wildcard lower bound, the stdlib creates a read-only array that supports subtype assignment:
+
+```scala
+val strings: IArray[String] = IArray("hello", "world")
+val anys: IArray[Any] = strings   // ✓ covariance allows this
+anys(0)                            // "hello"
+```
+
+The opaque boundary hides `Array`'s `update` method. Extension methods like `apply`, `length`, `map`, and `filter` define the public API. `IArray.unsafeFromArray` provides a zero-copy escape hatch for performance-critical code.
+
+Our `ImmutableBuffer` example follows this exact pattern with `ArrayBuffer` as the backing type.
+
+### `NamedTuple`: compile-time-only field names
+
+From `scala.NamedTuple`:
+
+```scala
+opaque type NamedTuple[N <: Tuple, +V <: Tuple] = V
+```
+
+A named tuple is just a plain tuple (`V`) at runtime. The names (`N`) exist only as a type-level parameter — they're erased completely:
+
+```scala
+val person = (name = "Alice", age = 30)
+person.name     // "Alice" — field access via extension method
+person.toTuple  // ("Alice", 30) — strips the names
+```
+
+This demonstrates the "phantom information" pattern: using opaque types to carry compile-time metadata that costs nothing at runtime.
+
+### `Conversion.into`: subtype-widening marker
+
+From `scala.Conversion`:
+
+```scala
+opaque type into[+T] >: T = T
+```
+
+This declares that `into[T]` is a supertype of `T` (`>: T`) while being equal to `T` at runtime. It's used to mark values that can be implicitly converted — the opaque type acts as a type-level flag that triggers conversion lookup without any runtime representation.
 
 ## Limitations
 
@@ -711,6 +965,57 @@ CodecBenchmark.opaque_roundtripOrderId  0.455 ± 0.004  ops/ns
 The confidence intervals overlap completely — the opaque type itself adds zero measurable overhead. The absolute cost visible here is from `Function1` virtual dispatch in the codec pattern, which is the same regardless of which opaque type is used.
 
 To reproduce: `sbt 'Jmh/run benchmark.CodecBenchmark'`
+
+## Performance: When `asInstanceOf` Matters and When It Doesn't
+
+The `OpaqueCodec` trait provides `encode`/`decode` as virtual methods. For opaque types these are identity functions, but calling them still involves virtual dispatch: `OpaqueCodec` vtable → `Function1` vtable → `=:=` vtable → identity. That's 4 levels of indirection per call.
+
+Whether this matters depends on what the surrounding operation costs.
+
+### Cheap operations: overhead is visible
+
+For type classes where the core operation is fast — like `Ordering.compare` (a few nanoseconds) — the dispatch overhead is proportionally large. JMH benchmarks show ~2.5x slowdown with delegation vs direct use:
+
+```
+Benchmark                         Mode  Cnt  Score    Error   Units
+NumericBenchmark.raw_compare     thrpt    5   0.710 ±  0.064  ops/ns   ← Numeric[BigDecimal] directly
+NumericBenchmark.codec_compare   thrpt    5   0.287 ±  0.007  ops/ns   ← delegation via codec.encode/decode
+NumericBenchmark.cast_compare    thrpt    5   0.713 ±  0.054  ops/ns   ← asInstanceOf (zero overhead)
+```
+
+For `OpaqueOrdering` and `OpaqueNumeric`, the fix is to reuse the underlying type class instance directly via `asInstanceOf`:
+
+```scala
+given derived[T, U](using codec: OpaqueCodec[T, U], ord: Ordering[U]): Ordering[T] =
+  ord.asInstanceOf[Ordering[T]]
+```
+
+This is safe because `OpaqueCodec[T, U]` can only be constructed from `T =:= U` evidence, which guarantees `T` and `U` erase to the same JVM type. The cast is a JVM no-op — `Ordering[U]` already IS `Ordering[T]` at runtime.
+
+### Expensive operations: overhead disappears
+
+For type classes where each operation involves object allocation — like `JsonFormat` where `write` creates `JsString`/`JsNumber` objects and `read` performs pattern matching — the dispatch overhead is negligible:
+
+```
+Benchmark                        Mode  Cnt  Score   Error   Units
+JsonBenchmark.raw_write         thrpt    5   0.440 ± 0.030  ops/ns   ← JsonFormat[String] directly
+JsonBenchmark.opaque_write      thrpt    5   0.443 ± 0.019  ops/ns   ← via codec.encode/decode
+JsonBenchmark.raw_read          thrpt    5   0.878 ± 0.083  ops/ns
+JsonBenchmark.opaque_read       thrpt    5   0.808 ± 0.028  ops/ns
+```
+
+The `JsString` allocation (~2ns) dwarfs the codec dispatch overhead. The JIT successfully inlines the identity calls when the surrounding operation provides enough "thermal mass." No optimization needed for `OpaqueJsonSupport`.
+
+### Rule of thumb
+
+| Type class pattern | Core operation cost | Codec overhead visible? | Use `asInstanceOf`? |
+|---|---|---|---|
+| `Ordering` / `Numeric` | A few ns (comparison, arithmetic) | Yes (~2.5x) | Yes |
+| `JsonFormat` | Tens of ns (allocation, matching) | No (~1x) | Not needed |
+
+The general principle: if the underlying operation is cheap enough that a few nanoseconds of virtual dispatch matters, reuse the instance via `asInstanceOf`. If the operation involves allocation or I/O, the codec dispatch vanishes in the noise.
+
+To reproduce: `sbt 'Jmh/run benchmark.NumericBenchmark'`
 
 ## Conclusion
 
