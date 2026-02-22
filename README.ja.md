@@ -440,11 +440,13 @@ object OpaqueOrdering {
 ```scala
 object OpaqueOrdering {
   given derived[T, U](using codec: OpaqueCodec[T, U], ord: Ordering[U]): Ordering[T] =
-    ord.on(codec.encode)
+    ord.asInstanceOf[Ordering[T]]
 }
 ```
 
 これが機能する理由は、`OpaqueCodec[UserId, U]` はコンパニオンからエクスポートされた具体的な `OpaqueCodec[UserId, String]` にしか解決できないためです — コンパイラは直接 `U = String` を推論します。`OpaqueCodec` は `=:=`/`<:<` 階層とは無関係なトレイトなので、`<:<.refl` は関係しません。
+
+`asInstanceOf` キャストはここでは安全です。`OpaqueCodec[T, U]` はコンパニオン内部の `T =:= U` エビデンスから構築されるため、`T` と `U` は同じ JVM 型に消去されることが保証されます。`Ordering[U]` は実行時にはすでに `Ordering[T]` そのものです — ラッピングや委譲は不要です。
 
 同じ単一の import がそのまま機能します：
 
@@ -455,7 +457,259 @@ val ids = List(UserId("charlie"), UserId("alice"), UserId("bob"))
 ids.sorted  // List(alice, bob, charlie) — Ordering[UserId] が自動導出される
 ```
 
-新しい基底型（例：`opaque type TraceId = UUID`）を追加しても `OpaqueOrdering` の変更は不要です — 単一のルールが自動的にカバーします。
+新しい基底型を追加しても `OpaqueOrdering` の変更は不要です — 基底型に `Ordering` インスタンスがある限り、単一のルールが自動的にカバーします。
+
+### 実用的なヒント：ID には `String` を基底型として使う
+
+ソート可能なユニーク識別子 — 例えば ULID ベースのトレース ID — が必要な場合、プレーンな `String` として保持します：
+
+```scala
+object TraceId {
+  opaque type TraceId = String
+  def apply(value: String): TraceId = value
+  def newTraceId: TraceId = ULID.newULIDString   // 生成し、String として保持
+  given OpaqueCodec[TraceId, String] = OpaqueCodec.fromEvidence
+}
+```
+
+ULID は128ビットの値（48ビットのタイムスタンプ + 80ビットのランダム値）を26文字の Crockford Base32 文字列にエンコードしたものです。このエンコーディングは辞書順の比較が時系列順と一致するよう設計されているため、`Ordering[String]` を通じて `OpaqueOrdering` で時間ベースのソートがそのまま得られます。特別な `Ordering` インスタンスも、ラッパーオブジェクトも、追加のライブラリも不要です。このプロジェクトには、同一ミリ秒内で単調増加する文字列を生成する最小限の `ULID.newULIDString` ジェネレータが含まれています（`patterns/ulid/ULID.scala` を参照）。
+
+## Ordering を超えて：Numeric の導出
+
+同じパターンは `Numeric` — 算術演算を提供する型クラス — にも拡張できます。`BidPrice` や `Timestamp` のような数値 opaque type を持つコードベースでは、各演算を `BigDecimal` に委譲する `Numeric[BidPrice]` インスタンスを手書きすることになります。
+
+### OpaqueNumeric：単一の汎用ルール
+
+```scala
+object OpaqueNumeric {
+  given derived[T, U](using codec: OpaqueCodec[T, U], num: Numeric[U]): Numeric[T] =
+    num.asInstanceOf[Numeric[T]]
+}
+```
+
+`OpaqueOrdering` と同じ `asInstanceOf` テクニックです — `T` と `U` は同じ JVM 型に消去されるため、`Numeric[U]` がオーバーヘッドゼロでそのまま再利用されます。
+
+`OpaqueNumeric` は演算子エクステンションメソッド（`+`、`-`、`*`、単項 `-`）も提供するため、自然な算術式が書けます。`Numeric` インスタンスと演算子の両方を得るには `{given, *}` でインポートします：
+
+```scala
+import codec.OpaqueNumeric.{given, *}
+```
+
+`Numeric` は `Ordering` を拡張するため、これにより Ordering も提供されます。数値 opaque type には、暗黙の曖昧さを避けるため `OpaqueOrdering` の代わりに `OpaqueNumeric` を使ってください。
+
+### Inches と Centimeters：エクステンションメソッド + 算術
+
+*Advanced Programming in Scala 第5版* の典型的な例 — 単位安全な長さの型：
+
+```scala
+object Inches {
+  opaque type Inches = Double
+  def apply(value: Double): Inches = value
+  given OpaqueCodec[Inches, Double] = OpaqueCodec.fromEvidence
+
+  extension (i: Inches) {
+    def toCentimeters: Centimeters.Centimeters = Centimeters(i * 2.54)
+    def value: Double = i
+  }
+}
+
+object Centimeters {
+  opaque type Centimeters = Double
+  def apply(value: Double): Centimeters = value
+  given OpaqueCodec[Centimeters, Double] = OpaqueCodec.fromEvidence
+
+  extension (c: Centimeters) {
+    def toInches: Inches.Inches = Inches(c / 2.54)
+    def value: Double = c
+  }
+}
+```
+
+エクステンションメソッドはドメイン固有の変換ロジックを追加します。`OpaqueNumeric` は算術を自動的に追加します。型システムが単位の混合を防止します — `Inches + Centimeters` はコンパイルされません：
+
+```scala
+import codec.OpaqueNumeric.{given, *}
+
+Inches(1.0) + Inches(2.0)       // ✓ Inches(3.0)
+Inches(5.0) - Inches(2.0)       // ✓ Inches(3.0)
+-Inches(3.0)                     // ✓ Inches(-3.0)
+List(Inches(1), Inches(2)).sum   // ✓ Inches(3.0)
+Inches(1.0) + Centimeters(2.0)  // ✗ コンパイルエラー — 型の不一致
+```
+
+### なぜ委譲ではなく `asInstanceOf` なのか？
+
+素朴なアプローチでは、すべての `Numeric` 演算を `codec.encode`/`codec.decode` 経由でラップします：
+
+```scala
+// ✗ 約2倍遅い — encode/decode ごとに4回の仮想ディスパッチ
+def plus(x: T, y: T): T = codec.decode(num.plus(codec.encode(x), codec.encode(y)))
+```
+
+各 `codec.encode(x)` は `OpaqueCodec` vtable → `Function1` vtable → `=:=` vtable → 恒等関数と辿ります。実質的に何もしない処理に4段階の仮想ディスパッチが発生します。JMH ベンチマークでオーバーヘッドが確認できます：
+
+```
+Benchmark                         Mode  Cnt  Score    Error   Units
+NumericBenchmark.raw_compare     thrpt    5   0.710 ±  0.064  ops/ns   ← Numeric[BigDecimal] 直接
+NumericBenchmark.codec_compare   thrpt    5   0.287 ±  0.007  ops/ns   ← codec.encode/decode 経由の委譲
+NumericBenchmark.cast_compare    thrpt    5   0.713 ±  0.054  ops/ns   ← asInstanceOf（オーバーヘッドゼロ）
+```
+
+`asInstanceOf` アプローチは既存の `Numeric[U]` インスタンスをそのまま再利用します — ラッピングも委譲も仮想ディスパッチのオーバーヘッドもありません。`OpaqueCodec[T, U]` は `T =:= U` エビデンスからのみ構築されるため、`T` と `U` が同じ JVM 型に消去されることが保証されており、このキャストは安全です。
+
+## パターン：Opaque Type によるインターフェース制限（IArray）
+
+opaque type は既存のミュータブル API を読み取り専用ビューに制限できます — Scala 標準ライブラリが `IArray` で使っているのと同じテクニックです。
+
+### アイデア
+
+`ArrayBuffer` はミュータブルです。opaque type の境界の背後にエイリアスし、読み取り専用のエクステンションメソッドのみを公開することで、ラッピングオーバーヘッドゼロのイミュータブルインターフェースを得ます：
+
+```scala
+object ImmutableBuffer {
+  opaque type ImmutableBuffer[+T] = ArrayBuffer[? <: T]
+
+  def apply[T](elems: T*): ImmutableBuffer[T] = ArrayBuffer.from(elems)
+  def unsafeFromArrayBuffer[T](buf: ArrayBuffer[T]): ImmutableBuffer[T] = buf
+
+  extension [T](buf: ImmutableBuffer[T]) {
+    def apply(index: Int): T = buf(index)
+    def size: Int = buf.size
+    def head: T = buf.head
+    def last: T = buf.last
+    def toList: List[T] = buf.toList
+    def map[U](f: T => U): ImmutableBuffer[U] = ArrayBuffer.from(buf.map(f))
+    def filter(p: T => Boolean): ImmutableBuffer[T] = ArrayBuffer.from(buf.filter(p))
+    // add/remove/update なし — opaque 境界によって隠蔽
+  }
+}
+```
+
+### 主要テクニック
+
+**不変な背後の型に対する共変性。** `ArrayBuffer` は不変（`ArrayBuffer[T]`）ですが、opaque type はワイルドカード `ArrayBuffer[? <: T]` を使って `ImmutableBuffer[+T]` を宣言します。これは `IArray` と同じパターンです：
+
+```
+opaque type IArray[+T] = Array[? <: T]                 // 標準ライブラリ
+opaque type ImmutableBuffer[+T] = ArrayBuffer[? <: T]  // 我々のバージョン
+```
+
+共変性が安全なのは、opaque 境界がすべての変更メソッドを隠すからです — 読み取りのみ可能で、書き込みはできません。
+
+**`unsafeFromArrayBuffer` は明示的なエスケープハッチ。** `IArray.unsafeFromArray` と同様に、コピーなしで背後のストレージを共有します。元の参照を通じた変更は見えます — だから "unsafe" です：
+
+```scala
+val backing = ArrayBuffer(1, 2, 3)
+val buf = ImmutableBuffer.unsafeFromArrayBuffer(backing)
+backing(0) = 99
+buf(0)  // 99 — 変更が見える
+```
+
+## 落とし穴：Matchable とランタイム安全性
+
+opaque type はコンパイル時の概念です。ランタイムでは基底型に完全に消去されます。ランタイム型チェックを使うときに落とし穴が生まれます。
+
+### 問題
+
+`String` を背後に持つ2つの opaque type を考えてみましょう：
+
+```scala
+object Street {
+  opaque type Street = String
+  def apply(value: String): Street = value
+}
+
+object City {
+  opaque type City = String
+  def apply(value: String): City = value
+}
+```
+
+コンパイル時には `Street` と `City` は別の型です。ランタイムでは両方とも `String` です：
+
+```scala
+val street: Street = Street("123 Main St")
+
+street.isInstanceOf[String]  // true — opaque type は消去されている
+
+(street: Any) match {
+  case s: String => "matched as String"  // このブランチが実行される
+  case _         => "not matched"
+}
+```
+
+### ランタイムで機能しないもの
+
+- **`isInstanceOf`** は常に基底型を見ます — `Street` と `City` を区別できません
+- **型に対するパターンマッチ** は opaque 境界を貫通します
+- **`ClassTag`** は `Street` も `String` も同じ `runtimeClass` を共有します
+- **`asInstanceOf`** は同じ基底型を共有する opaque type 間でキャストできます
+
+### 緩和策：`strictEquality`
+
+ユニバーサル等価性（デフォルト）では、`Street("x") == City("x")` はランタイムで `true` を返します — opaque type の区別は見えません。`strictEquality` を有効にするとこれを防げます：
+
+```scala
+import scala.language.strictEquality
+
+Street("x") == City("x")  // ✗ CanEqual インスタンスなしではコンパイルエラー
+```
+
+### 要点
+
+opaque type は**コンパイル時**の安全性のみを提供します。opaque type を区別するためにランタイム型チェック（`isInstanceOf`、型に対するパターンマッチ、`ClassTag`）に頼ってはいけません。境界を強制するには、ランタイムリフレクションではなく型システムを使いましょう。
+
+## Scala 標準ライブラリにおける Opaque Type
+
+このプロジェクトで示したパターンは学術的な練習ではありません — Scala 自身の標準ライブラリに登場します。stdlib のソースを調べると、3つの注目すべき使い方がわかります。
+
+### `IArray`：共変性トリックによる読み取り専用配列
+
+`scala.IArray` より：
+
+```scala
+opaque type IArray[+T] = Array[? <: T]
+```
+
+`Array` は不変でミュータブルです。ワイルドカード下限境界を持つ共変型パラメータの opaque type でラップすることで、stdlib はサブタイプ代入をサポートする読み取り専用配列を作ります：
+
+```scala
+val strings: IArray[String] = IArray("hello", "world")
+val anys: IArray[Any] = strings   // ✓ 共変性によりこれが可能
+anys(0)                            // "hello"
+```
+
+opaque 境界は `Array` の `update` メソッドを隠します。`apply`、`length`、`map`、`filter` などのエクステンションメソッドが公開 API を定義します。`IArray.unsafeFromArray` はパフォーマンスが重要なコード向けのゼロコピーエスケープハッチを提供します。
+
+我々の `ImmutableBuffer` の例は、`ArrayBuffer` を背後の型として、まさにこのパターンに従っています。
+
+### `NamedTuple`：コンパイル時のみのフィールド名
+
+`scala.NamedTuple` より：
+
+```scala
+opaque type NamedTuple[N <: Tuple, +V <: Tuple] = V
+```
+
+名前付きタプルはランタイムではただのプレーンなタプル（`V`）です。名前（`N`）は型レベルのパラメータとしてのみ存在し、完全に消去されます：
+
+```scala
+val person = (name = "Alice", age = 30)
+person.name     // "Alice" — エクステンションメソッドによるフィールドアクセス
+person.toTuple  // ("Alice", 30) — 名前を取り除く
+```
+
+これは「ファントム情報」パターンを示しています：opaque type を使ってランタイムコストゼロのコンパイル時メタデータを運ぶことです。
+
+### `Conversion.into`：サブタイプ拡張マーカー
+
+`scala.Conversion` より：
+
+```scala
+opaque type into[+T] >: T = T
+```
+
+これは `into[T]` が `T` のスーパータイプ（`>: T`）であると宣言しつつ、ランタイムでは `T` と等しいものです。暗黙的に変換できる値をマークするために使われます — opaque type がランタイム表現なしで変換ルックアップをトリガーする型レベルのフラグとして機能します。
 
 ## 制約
 
@@ -711,6 +965,57 @@ CodecBenchmark.opaque_roundtripOrderId  0.455 ± 0.004  ops/ns
 信頼区間は完全に重なっています — opaque type 自体はゼロの測定可能なオーバーヘッドを追加します。ここで見える絶対コストはコーデックパターンの `Function1` 仮想ディスパッチによるもので、どの opaque type を使っても同じです。
 
 再現方法：`sbt 'Jmh/run benchmark.CodecBenchmark'`
+
+## パフォーマンス：`asInstanceOf` が効く場合と効かない場合
+
+`OpaqueCodec` トレイトは `encode`/`decode` を仮想メソッドとして提供します。opaque type ではこれらは恒等関数ですが、呼び出しには仮想ディスパッチが伴います：`OpaqueCodec` vtable → `Function1` vtable → `=:=` vtable → 恒等関数。1回の呼び出しに4段階の間接参照が発生します。
+
+これが問題になるかどうかは、周囲の演算コストに依存します。
+
+### 軽量な演算：オーバーヘッドが顕在化する
+
+コア演算が高速な型クラス — `Ordering.compare`（数ナノ秒）など — では、ディスパッチオーバーヘッドの比率が大きくなります。JMH ベンチマークでは委譲方式で約2.5倍の性能低下が確認されます：
+
+```
+Benchmark                         Mode  Cnt  Score    Error   Units
+NumericBenchmark.raw_compare     thrpt    5   0.710 ±  0.064  ops/ns   ← Numeric[BigDecimal] 直接
+NumericBenchmark.codec_compare   thrpt    5   0.287 ±  0.007  ops/ns   ← codec.encode/decode 経由の委譲
+NumericBenchmark.cast_compare    thrpt    5   0.713 ±  0.054  ops/ns   ← asInstanceOf（オーバーヘッドゼロ）
+```
+
+`OpaqueOrdering` と `OpaqueNumeric` では、基底型の型クラスインスタンスを `asInstanceOf` で直接再利用することで解決します：
+
+```scala
+given derived[T, U](using codec: OpaqueCodec[T, U], ord: Ordering[U]): Ordering[T] =
+  ord.asInstanceOf[Ordering[T]]
+```
+
+`OpaqueCodec[T, U]` は `T =:= U` エビデンスからのみ構築されるため、`T` と `U` が同じ JVM 型に消去されることが保証されており、このキャストは安全です。JVM レベルではノーオペレーション — `Ordering[U]` は実行時にはすでに `Ordering[T]` そのものです。
+
+### 重い演算：オーバーヘッドが消える
+
+各演算でオブジェクト生成を伴う型クラス — `JsonFormat` の `write` が `JsString`/`JsNumber` を生成し、`read` がパターンマッチを行うケースなど — では、ディスパッチオーバーヘッドは無視できます：
+
+```
+Benchmark                        Mode  Cnt  Score   Error   Units
+JsonBenchmark.raw_write         thrpt    5   0.440 ± 0.030  ops/ns   ← JsonFormat[String] 直接
+JsonBenchmark.opaque_write      thrpt    5   0.443 ± 0.019  ops/ns   ← codec.encode/decode 経由
+JsonBenchmark.raw_read          thrpt    5   0.878 ± 0.083  ops/ns
+JsonBenchmark.opaque_read       thrpt    5   0.808 ± 0.028  ops/ns
+```
+
+`JsString` のアロケーション（約2ns）がコーデックのディスパッチオーバーヘッドを圧倒します。周囲の演算が十分な「熱質量」を持つ場合、JIT は恒等関数の呼び出しをインライン化します。`OpaqueJsonSupport` の最適化は不要です。
+
+### 判断基準
+
+| 型クラスパターン | コア演算コスト | コーデックオーバーヘッドが顕在化？ | `asInstanceOf` を使う？ |
+|---|---|---|---|
+| `Ordering` / `Numeric` | 数 ns（比較、算術） | はい（約2.5倍） | はい |
+| `JsonFormat` | 数十 ns（アロケーション、マッチング） | いいえ（約1倍） | 不要 |
+
+一般原則：基底の演算が十分に軽量で、数ナノ秒の仮想ディスパッチが問題になる場合は `asInstanceOf` でインスタンスを再利用します。演算がアロケーションや I/O を伴う場合、コーデックのディスパッチはノイズに埋もれます。
+
+再現方法：`sbt 'Jmh/run benchmark.NumericBenchmark'`
 
 ## 結論
 
