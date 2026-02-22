@@ -537,25 +537,7 @@ List(Inches(1), Inches(2)).sum   // ✓ Inches(3.0)
 Inches(1.0) + Centimeters(2.0)  // ✗ コンパイルエラー — 型の不一致
 ```
 
-### なぜ委譲ではなく `asInstanceOf` なのか？
-
-素朴なアプローチでは、すべての `Numeric` 演算を `codec.encode`/`codec.decode` 経由でラップします：
-
-```scala
-// ✗ 約2倍遅い — encode/decode ごとに4回の仮想ディスパッチ
-def plus(x: T, y: T): T = codec.decode(num.plus(codec.encode(x), codec.encode(y)))
-```
-
-各 `codec.encode(x)` は `OpaqueCodec` vtable → `Function1` vtable → `=:=` vtable → 恒等関数と辿ります。実質的に何もしない処理に4段階の仮想ディスパッチが発生します。JMH ベンチマークでオーバーヘッドが確認できます：
-
-```
-Benchmark                         Mode  Cnt  Score    Error   Units
-NumericBenchmark.raw_compare     thrpt    5   0.710 ±  0.064  ops/ns   ← Numeric[BigDecimal] 直接
-NumericBenchmark.codec_compare   thrpt    5   0.287 ±  0.007  ops/ns   ← codec.encode/decode 経由の委譲
-NumericBenchmark.cast_compare    thrpt    5   0.713 ±  0.054  ops/ns   ← asInstanceOf（オーバーヘッドゼロ）
-```
-
-`asInstanceOf` アプローチは既存の `Numeric[U]` インスタンスをそのまま再利用します — ラッピングも委譲も仮想ディスパッチのオーバーヘッドもありません。`OpaqueCodec[T, U]` は `T =:= U` エビデンスからのみ構築されるため、`T` と `U` が同じ JVM 型に消去されることが保証されており、このキャストは安全です。
+`OpaqueOrdering` と `OpaqueNumeric` はどちらも `codec.encode`/`codec.decode` 経由の委譲ではなく `asInstanceOf` を使用しています。この選択の背景にあるベンチマークデータは[パフォーマンス：`asInstanceOf` が効く場合と効かない場合](#パフォーマンスasinstanceof-が効く場合と効かない場合)を参照してください。
 
 ## パターン：Opaque Type によるインターフェース制限（IArray）
 

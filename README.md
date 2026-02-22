@@ -537,25 +537,7 @@ List(Inches(1), Inches(2)).sum   // ✓ Inches(3.0)
 Inches(1.0) + Centimeters(2.0)  // ✗ compile error — type mismatch
 ```
 
-### Why `asInstanceOf` and not delegation?
-
-A naive approach wraps every `Numeric` operation through `codec.encode`/`codec.decode`:
-
-```scala
-// ✗ ~2x slower — 4 virtual dispatches per encode/decode
-def plus(x: T, y: T): T = codec.decode(num.plus(codec.encode(x), codec.encode(y)))
-```
-
-Each `codec.encode(x)` traverses: `OpaqueCodec` vtable → `Function1` vtable → `=:=` vtable → identity. That's 4 levels of virtual dispatch for what is ultimately a no-op. JMH benchmarks confirm the overhead:
-
-```
-Benchmark                         Mode  Cnt  Score    Error   Units
-NumericBenchmark.raw_compare     thrpt    5   0.710 ±  0.064  ops/ns   ← Numeric[BigDecimal] directly
-NumericBenchmark.codec_compare   thrpt    5   0.287 ±  0.007  ops/ns   ← delegation via codec.encode/decode
-NumericBenchmark.cast_compare    thrpt    5   0.713 ±  0.054  ops/ns   ← asInstanceOf (zero overhead)
-```
-
-The `asInstanceOf` approach reuses the existing `Numeric[U]` instance directly — no wrapping, no delegation, no virtual dispatch overhead. This is safe because `OpaqueCodec[T, U]` can only be constructed from `T =:= U` evidence, which guarantees `T` and `U` erase to the same JVM type.
+Both `OpaqueOrdering` and `OpaqueNumeric` use `asInstanceOf` rather than delegating through `codec.encode`/`codec.decode`. See [Performance: When `asInstanceOf` Matters and When It Doesn't](#performance-when-asinstanceof-matters-and-when-it-doesnt) for the benchmark data behind this choice.
 
 ## Pattern: Interface Narrowing via Opaque Types (IArray)
 
